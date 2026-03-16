@@ -5,7 +5,7 @@ OCR pipeline to extract voter details from electoral-roll pages (images or PDF),
 ## Features
 
 - Numeric sorting of `page_*.jpg` files.
-- Skip first 2 front pages by default.
+- Process all pages by default; optionally skip front pages when needed.
 - Detect voter-card boxes on each page (`w > 400`, `h > 120`).
 - OCR each voter card crop (`--psm 6`).
 - EPIC extraction from header crop with OCR correction (`3 letters + 7 digits`).

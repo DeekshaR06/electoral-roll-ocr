@@ -9,7 +9,7 @@ const STAGES = [
   'Generating Excel file...',
 ];
 
-export default function ProcessingProgress({ progress, stageIndex }) {
+export default function ProcessingProgress({ progress, stageIndex, currentStage }) {
   return (
     <motion.div
       initial={{ opacity: 0, y: 12 }}
@@ -19,7 +19,7 @@ export default function ProcessingProgress({ progress, stageIndex }) {
       <div className="flex items-center gap-3 mb-4">
         <Loader2 className="w-5 h-5 animate-spin" style={{ color: '#1a3c6e' }} />
         <span className="text-sm font-semibold" style={{ color: '#1f2937' }}>
-          Processing...
+          {currentStage || 'Processing...'}
         </span>
         <span className="text-sm font-bold ml-auto" style={{ color: '#1a3c6e' }}>
           {progress}%

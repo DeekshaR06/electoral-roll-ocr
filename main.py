@@ -1,8 +1,12 @@
 # main.py
 import os
+import shutil
+import tempfile
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed  # OPTIMIZED
+from typing import Callable, Optional
 from pipeline.image_loader import get_voter_pages
-from pipeline.preprocessing import detect_voter_boxes
+from pipeline.preprocessing import detect_voter_boxes, is_data_page  # OPTIMIZED
 from pipeline.ocr_engine import (
     image_array_to_text,
     extract_epic_from_crop,
@@ -21,6 +25,35 @@ PDF_SAMPLE = "sample_data.pdf"  # optional: if you want to convert pdf to images
 # Optional Windows override, same behavior as notebook cell.
 if os.getenv("TESSERACT_CMD"):
     pytesseract.pytesseract.tesseract_cmd = os.getenv("TESSERACT_CMD")
+
+
+def process_single_page(args):  # OPTIMIZED
+    """Process one page and return list of voter records without serial numbers."""  # OPTIMIZED
+    page_path, page_idx = args  # OPTIMIZED
+    page_records = []  # OPTIMIZED
+    try:  # OPTIMIZED
+        img = cv2.imread(page_path)  # OPTIMIZED
+        if img is None:  # OPTIMIZED
+            print(f"Warning: could not read {page_path}")  # OPTIMIZED
+            return page_idx, []  # OPTIMIZED
+
+        boxes = detect_voter_boxes(img, min_width=400, min_height=120)  # OPTIMIZED
+        for x, y, w, h in boxes:  # OPTIMIZED
+            try:  # OPTIMIZED
+                voter_crop = img[y:y + h, x:x + w]  # OPTIMIZED
+                text = image_array_to_text(voter_crop, psm=6)  # OPTIMIZED
+                epic = extract_epic_from_crop(voter_crop)  # OPTIMIZED
+                if not epic:  # OPTIMIZED
+                    epic = extract_epic_fallback_from_text(text)  # OPTIMIZED
+                rec = parse_voter_fields(text, epic=epic)  # OPTIMIZED
+                rec['source_file'] = os.path.basename(page_path)  # OPTIMIZED
+                page_records.append(rec)  # OPTIMIZED
+            except Exception as e:  # OPTIMIZED
+                print(f"Error on crop in {page_path}: {e}")  # OPTIMIZED
+    except Exception as e:  # OPTIMIZED
+        print(f"Error processing page {page_path}: {e}")  # OPTIMIZED
+
+    return page_idx, page_records  # OPTIMIZED
 
 
 def cleanup_legacy_outputs(out_folder):
@@ -45,91 +78,133 @@ def run_pipeline(
     images_folder=IMAGES_DIR,
     out_folder=OUTPUT_DIR,
     pdf_path=None,
-    autosave_every_pages=1,
-    skip_front_pages=2,
+    autosave_every_pages=5,  # OPTIMIZED
+    skip_front_pages=0,
+    progress_callback: Optional[Callable[[int], None]] = None,
 ):
     os.makedirs(out_folder, exist_ok=True)
     cleanup_legacy_outputs(out_folder)
 
+    working_images_folder = images_folder
+    temp_images_folder = None
+
+    if pdf_path:
+        # Use an isolated temp folder for PDF page images so repeated runs do not
+        # delete or mix pages from another invocation.
+        temp_images_folder = tempfile.mkdtemp(prefix="ocr_pages_")
+        working_images_folder = temp_images_folder
+
     if pdf_path:
         print(f"Input PDF: {pdf_path}")
 
-    pages = get_voter_pages(
-        images_folder,
-        pdf_path=pdf_path,
-        skip_front_pages=skip_front_pages,
-    )
-
-    if not pages:
-        print(
-            "No input pages found. Add page images to 'images/' or run with pdf_path='sample_data.pdf'."
-        )
-        return
-
-    print(f"Processing {len(pages)} pages from '{images_folder}' after skipping {skip_front_pages} front pages.")
-
-    output_xlsx_path = os.path.join(out_folder, "voter_output.xlsx")
-    fallback_xlsx_path = os.path.join(out_folder, "voter_output_autosave.xlsx")
-    latest_saved_path = None
-
-    def flush_outputs():
-        nonlocal latest_saved_path
-        try:
-            save_to_formatted_excel(records, output_xlsx_path)
-            latest_saved_path = output_xlsx_path
-        except PermissionError:
-            # Most commonly this happens when voter_output.xlsx is open in Excel.
-            print(
-                f"Could not write '{output_xlsx_path}' (file is in use). "
-                f"Saving to '{fallback_xlsx_path}' instead."
-            )
-            save_to_formatted_excel(records, fallback_xlsx_path)
-            latest_saved_path = fallback_xlsx_path
-
-    records = []
-    serial_counter = 1
-    pages_processed = 0
-
     try:
-        for page in tqdm(pages, desc="Processing pages"):
+        pages = get_voter_pages(
+            working_images_folder,
+            pdf_path=pdf_path,
+            skip_front_pages=skip_front_pages,
+        )
+
+        if not pages:
+            print(
+                "No input pages found. Add page images to 'images/' or run with pdf_path='sample_data.pdf'."
+            )
+            return {
+                "records": [],
+                "pages_processed": 0,
+                "output_path": None,
+            }
+
+        if progress_callback:  # OPTIMIZED
+            progress_callback(15)  # OPTIMIZED
+        pages = [page for page in pages if is_data_page(page)]  # OPTIMIZED
+        print(f"Auto-detected {len(pages)} data pages")  # OPTIMIZED
+
+        if not pages:  # OPTIMIZED
+            return {  # OPTIMIZED
+                "records": [],  # OPTIMIZED
+                "pages_processed": 0,  # OPTIMIZED
+                "output_path": None,  # OPTIMIZED
+            }  # OPTIMIZED
+
+        print(  # OPTIMIZED
+            f"Processing {len(pages)} data pages from '{working_images_folder}' after skipping {skip_front_pages} front pages."  # OPTIMIZED
+        )  # OPTIMIZED
+
+        output_xlsx_path = os.path.join(out_folder, "voter_output.xlsx")
+        fallback_xlsx_path = os.path.join(out_folder, "voter_output_autosave.xlsx")
+        latest_saved_path = None
+
+        def flush_outputs():
+            nonlocal latest_saved_path
             try:
-                img = cv2.imread(page)
-                if img is None:
-                    print(f"Warning: could not read {page}")
-                    continue
+                save_to_formatted_excel(records, output_xlsx_path)
+                latest_saved_path = output_xlsx_path
+            except PermissionError:
+                # Most commonly this happens when voter_output.xlsx is open in Excel.
+                print(
+                    f"Could not write '{output_xlsx_path}' (file is in use). "
+                    f"Saving to '{fallback_xlsx_path}' instead."
+                )
+                save_to_formatted_excel(records, fallback_xlsx_path)
+                latest_saved_path = fallback_xlsx_path
 
-                boxes = detect_voter_boxes(img, min_width=400, min_height=120)
+        records = []
+        pages_processed = 0
 
-                for x, y, w, h in boxes:
-                    try:
-                        voter_crop = img[y:y + h, x:x + w]
+        try:
+            all_page_results = [[] for _ in range(len(pages))]  # OPTIMIZED
+            completed_pages = set()  # OPTIMIZED
+            next_page_to_finalize = 0  # OPTIMIZED
+            serial_counter = 1  # OPTIMIZED
 
-                        text = image_array_to_text(voter_crop, psm=6)
+            with ThreadPoolExecutor(max_workers=4) as executor:  # OPTIMIZED
+                future_to_idx = {  # OPTIMIZED
+                    executor.submit(process_single_page, (page, idx)): idx  # OPTIMIZED
+                    for idx, page in enumerate(pages)  # OPTIMIZED
+                }  # OPTIMIZED
+                for future in tqdm(as_completed(future_to_idx), total=len(future_to_idx), desc="Processing pages"):  # OPTIMIZED
+                    try:  # OPTIMIZED
+                        page_idx, page_records = future.result()  # OPTIMIZED
+                        all_page_results[page_idx] = page_records  # OPTIMIZED
+                        completed_pages.add(page_idx)  # OPTIMIZED
+                    except Exception as e:  # OPTIMIZED
+                        print(f"Page future failed: {e}")  # OPTIMIZED
+                    finally:  # OPTIMIZED
+                        pages_processed += 1  # OPTIMIZED
 
-                        epic = extract_epic_from_crop(voter_crop)
-                        if not epic:
-                            epic = extract_epic_fallback_from_text(text)
+                    while next_page_to_finalize in completed_pages:  # OPTIMIZED
+                        for rec in all_page_results[next_page_to_finalize]:  # OPTIMIZED
+                            rec['Serial Number'] = serial_counter  # OPTIMIZED
+                            records.append(rec)  # OPTIMIZED
+                            serial_counter += 1  # OPTIMIZED
+                        next_page_to_finalize += 1  # OPTIMIZED
 
-                        rec = parse_voter_fields(text, serial_number=serial_counter, epic=epic)
-                        rec['source_file'] = os.path.basename(page)
-                        records.append(rec)
-                        serial_counter += 1
-                    except Exception as e:
-                        print(f"Error processing crop on {page}: {e}")
+                    if progress_callback and len(pages) > 0:  # OPTIMIZED
+                        progress_callback(int((pages_processed / len(pages)) * 90))  # OPTIMIZED
+                    if autosave_every_pages > 0 and pages_processed % autosave_every_pages == 0:  # OPTIMIZED
+                        flush_outputs()  # OPTIMIZED
+        except KeyboardInterrupt:
+            print("\nInterrupted. Saving partial results...")
+            flush_outputs()
+            print(f"Saved {len(records)} partial records to {latest_saved_path}")
+            return {
+                "records": records,
+                "pages_processed": pages_processed,
+                "output_path": latest_saved_path,
+            }
 
-                pages_processed += 1
-                if autosave_every_pages > 0 and pages_processed % autosave_every_pages == 0:
-                    flush_outputs()
-            except Exception as e:
-                print(f"Error processing {page}: {e}")
-    except KeyboardInterrupt:
-        print("\nInterrupted. Saving partial results...")
         flush_outputs()
-        print(f"Saved {len(records)} partial records to {latest_saved_path}")
-        return
-
-    flush_outputs()
-    print(f"Saved {len(records)} records to {latest_saved_path}")
+        if progress_callback:
+            progress_callback(100)
+        print(f"Saved {len(records)} records to {latest_saved_path}")
+        return {
+            "records": records,
+            "pages_processed": pages_processed,
+            "output_path": latest_saved_path,
+        }
+    finally:
+        if temp_images_folder and os.path.isdir(temp_images_folder):
+            shutil.rmtree(temp_images_folder, ignore_errors=True)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
@@ -157,14 +232,14 @@ if __name__ == "__main__":
         "--skip-front-pages",
         dest="skip_front_pages",
         type=int,
-        default=2,
+        default=0,
         help="Number of front pages to skip after sorting pages.",
     )
     parser.add_argument(
         "--autosave-every-pages",
         dest="autosave_every_pages",
         type=int,
-        default=1,
+        default=5,  # OPTIMIZED
         help="Autosave outputs every N processed pages. Use 0 to disable.",
     )
     parser.add_argument(

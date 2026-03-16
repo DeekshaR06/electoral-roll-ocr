@@ -14,6 +14,7 @@ export default function Upload() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [progress, setProgress] = useState(0);
   const [stageIndex, setStageIndex] = useState(0);
+  const [currentStage, setCurrentStage] = useState('Idle');
   const pollRef = useRef(null);
 
   const handleFileSelect = useCallback((f, error) => {
@@ -39,6 +40,7 @@ export default function Upload() {
           const data = await res.json();
           const pct = data.progress || 0;
           setProgress(pct);
+          setCurrentStage(data.stage || 'Processing...');
           if (pct < 25) setStageIndex(0);
           else if (pct < 50) setStageIndex(1);
           else if (pct < 75) setStageIndex(2);
@@ -64,6 +66,7 @@ export default function Upload() {
     setIsProcessing(true);
     setProgress(5);
     setStageIndex(0);
+    setCurrentStage('Uploading PDF...');
     pollStatus();
 
     try {
@@ -85,6 +88,7 @@ export default function Upload() {
       const data = await res.json();
       setProgress(100);
       setStageIndex(3);
+      setCurrentStage('Completed');
 
       // Brief pause to show 100%
       setTimeout(() => {
@@ -95,6 +99,7 @@ export default function Upload() {
       setIsProcessing(false);
       setProgress(0);
       setStageIndex(0);
+      setCurrentStage('Idle');
 
       if (err.message.includes('Failed to fetch') || err.message.includes('NetworkError')) {
         toast.error('Connection failed. Please check if the backend is running and try again.');
@@ -153,7 +158,7 @@ export default function Upload() {
       </Button>
 
       {isProcessing && (
-        <ProcessingProgress progress={progress} stageIndex={stageIndex} />
+        <ProcessingProgress progress={progress} stageIndex={stageIndex} currentStage={currentStage} />
       )}
     </div>
   );
