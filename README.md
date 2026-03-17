@@ -38,7 +38,7 @@ The pipeline accepts scanned Indian electoral roll PDFs (or pre-converted page i
 
 **Sample page:**
 
-![Sample Electoral Roll Page](images/page_001.jpg)
+![Sample Electoral Roll Page](images/page_003.jpg)
 
 > Pages that are cover pages or constituency headers (containing no voter records) can be skipped using the `--skip-front-pages` flag.
 
