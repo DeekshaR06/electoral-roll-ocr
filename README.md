@@ -1,4 +1,4 @@
-# 🗳️ Electoral Roll OCR
+#  Electoral Roll OCR
 
 > An end-to-end OCR pipeline to extract, digitize, and structure voter information from scanned Indian electoral roll PDFs.
 
@@ -10,7 +10,7 @@
 
 ---
 
-## 📌 Overview
+##  Overview
 
 Electoral rolls in India are distributed as scanned PDF documents, making bulk data extraction a slow and manual process. This project automates that entirely — it ingests a raw electoral roll PDF, detects individual voter card regions on each page using computer vision, runs OCR over each card, and exports all structured voter records into a clean Excel workbook.
 
@@ -18,7 +18,7 @@ The pipeline is designed to closely mirror an exploratory notebook workflow whil
 
 ---
 
-## 📥 Expected Input Format
+##  Expected Input Format
 
 The pipeline accepts scanned Indian electoral roll PDFs (or pre-converted page images). Each page should follow the standard Election Commission of India layout:
 
@@ -44,7 +44,7 @@ The pipeline accepts scanned Indian electoral roll PDFs (or pre-converted page i
 
 ---
 
-## ✨ Features
+##  Features
 
 - **PDF to image conversion** — Automatically converts electoral roll PDFs to page images using Poppler
 - **Intelligent voter box detection** — Detects individual voter card bounding boxes per page (width > 400px, height > 120px) using OpenCV contour analysis
@@ -66,7 +66,7 @@ The pipeline accepts scanned Indian electoral roll PDFs (or pre-converted page i
 
 ---
 
-## 🗂️ Project Structure
+##  Project Structure
 
 ```
 electoral-roll-ocr/
@@ -95,7 +95,7 @@ electoral-roll-ocr/
 
 ---
 
-## ⚙️ Installation
+##  Installation
 
 ### Prerequisites
 
@@ -117,7 +117,7 @@ pip install -r requirements.txt
 
 ---
 
-## 🚀 Usage
+##  Usage
 
 ### Option 1 — Run with a PDF *(recommended)*
 
@@ -162,7 +162,7 @@ python main.py --pdf sample_data.pdf
 
 ---
 
-## 📤 Output
+##  Output
 
 After a successful run, `output/voter_output.xlsx` will contain one row per voter with the following columns:
 
@@ -191,7 +191,7 @@ After a successful run, `output/voter_output.xlsx` will contain one row per vote
 
 ---
 
-## 🤝 Contributing
+##  Contributing
 
 Contributions are welcome! To get started:
 
@@ -205,13 +205,13 @@ Please open an issue first for significant changes or new features so we can dis
 
 ---
 
-## 📄 License
+##  License
 
 This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
 
 ---
 
-## 👩‍💻 Authors
+##  Authors
 
 <table>
   <tr>
