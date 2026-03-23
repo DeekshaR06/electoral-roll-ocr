@@ -2,7 +2,7 @@
 import re
 
 def normalize_text(text: str) -> str:
-    # unify whitespace and uppercase
+    """Collapse repeated whitespace for regex-friendly parsing."""
     return re.sub(r'\s+', ' ', text).strip()
 
 
@@ -12,6 +12,7 @@ def parse_voter_fields(raw_text: str, serial_number: int = None, epic: str = '')
     """
     text = raw_text or ''
 
+    # Use stop words so relation/house lines are not captured as part of the name.
     name = ''
     name_match = re.search(
         r'Name\s*[=:]\s*([A-Za-z\s]+?)(?=Husbands?|Mothers?|Fathers?|Others?|House|Age|$)',
@@ -21,6 +22,7 @@ def parse_voter_fields(raw_text: str, serial_number: int = None, epic: str = '')
     if name_match:
         name = name_match.group(1).strip()
 
+    # Relation parsing prioritizes common labels in descending frequency.
     relation_type = ''
     relative_name = ''
     rel_match = None
@@ -102,7 +104,7 @@ def find_epic_candidates(text: str):
     for i in range(0, max(0, len(cleaned) - 9)):
         chunk = cleaned[i:i+10]
         if len(chunk) == 10:
-            # heuristic: at least 3 letters + 3 digits
+            # Heuristic: candidate should contain both letters and digits.
             letters = sum(c.isalpha() for c in chunk)
             digits = sum(c.isdigit() for c in chunk)
             if letters >= 2 and digits >= 3:
@@ -155,7 +157,7 @@ def parse_voter_card(raw_text: str) -> dict:
     { 'name', 'epic', 'age', 'gender', 'dob', 'address' }
     """
     text = normalize_text(raw_text)
-    # split by lines (keep original line breaks from OCR by splitting on \n)
+    # Keep line-based variants because some fields are easier to detect per-line.
     raw_lines = [ln.strip() for ln in raw_text.splitlines() if ln.strip()]
     lines = [re.sub(r'[^A-Za-z0-9\s:/-]', '', ln).strip() for ln in raw_lines]
 
@@ -197,7 +199,7 @@ def parse_voter_card(raw_text: str) -> dict:
     name = extract_name(lines)
     rec['name'] = name
 
-    # Address fallback: sometimes the long line(s) after name contain address keywords
+    # Address fallback: prefer keyword lines, then long lines as a weak fallback.
     addr_lines = []
     for ln in lines:
         if re.search(r'(house|vill|addr|post|dist|district|pin|pincode|taluk|tehsil|city|state)', ln, re.I):

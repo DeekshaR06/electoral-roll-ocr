@@ -11,6 +11,8 @@ from fastapi.responses import FileResponse
 
 from main import run_pipeline
 
+# FastAPI service that wraps the OCR pipeline and exposes upload/status/download endpoints.
+
 app = FastAPI(title="Electoral Roll OCR API")
 
 app.add_middleware(
@@ -26,6 +28,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Global in-memory job state for a single active workflow.
 _state_lock = Lock()
 _status = {
     "state": "idle",
@@ -37,6 +40,7 @@ _downloads = {}
 
 
 def _set_status(*, state=None, progress=None, stage=None, error=None):  # OPTIMIZED
+    """Thread-safe helper to update API-visible pipeline status."""
     with _state_lock:
         if state is not None:
             _status["state"] = state
@@ -50,6 +54,7 @@ def _set_status(*, state=None, progress=None, stage=None, error=None):  # OPTIMI
 
 @app.get("/status")
 def get_status():
+    """Return the latest processing state consumed by the frontend progress UI."""
     with _state_lock:
         return {
             "state": _status["state"],
@@ -61,6 +66,7 @@ def get_status():
 
 @app.post("/upload")
 async def upload_roll(file: UploadFile = File(...)):
+    """Accept a roll PDF, run OCR pipeline, and return summary + preview rows."""
     filename = (file.filename or "").lower()
     if not filename.endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Please upload a valid PDF file")
@@ -74,6 +80,7 @@ async def upload_roll(file: UploadFile = File(...)):
             tmp_path = tmp.name
 
         def update_progress(pct: int):  # OPTIMIZED
+            # Map coarse numeric progress to user-facing stage labels.
             if pct < 15:  # OPTIMIZED
                 stage = "Converting PDF to images..."  # OPTIMIZED
             elif pct < 30:  # OPTIMIZED
@@ -101,6 +108,7 @@ async def upload_roll(file: UploadFile = File(...)):
         male_count = sum((r.get("Gender") or "").strip().lower() == "male" for r in records)
         female_count = sum((r.get("Gender") or "").strip().lower() == "female" for r in records)
 
+        # Keep API response light by returning only the first few extracted voters.
         preview = []
         for row in records[:10]:
             preview.append(
@@ -139,6 +147,7 @@ async def upload_roll(file: UploadFile = File(...)):
 
 @app.get("/download/{download_id}")
 def download_output(download_id: str):
+    """Serve generated Excel file for a previously returned download token."""
     output_path = _downloads.get(download_id)
     if not output_path or not os.path.exists(output_path):
         raise HTTPException(status_code=404, detail="Output file not found")

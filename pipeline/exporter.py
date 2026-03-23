@@ -18,16 +18,19 @@ VOTER_HEADERS = [
 
 
 def _to_voter_df(records: List[Dict]) -> pd.DataFrame:
+    """Normalize arbitrary record dicts into the fixed voter export schema."""
     df = pd.DataFrame(records)
     return df.reindex(columns=VOTER_HEADERS)
 
 def save_to_csv(records: List[Dict], out_path: str):
+    """Write records as plain CSV with stable voter column ordering."""
     df = _to_voter_df(records)
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     df.to_csv(out_path, index=False, encoding='utf-8')
     return out_path
 
 def save_to_excel(records: List[Dict], out_path: str):
+    """Write records as a basic Excel file without custom styling."""
     df = _to_voter_df(records)
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     df.to_excel(out_path, index=False)
@@ -55,6 +58,7 @@ def save_to_formatted_excel(records: List[Dict], out_path: str):
         cell.alignment = Alignment(horizontal='center')
 
     if not df.empty:
+        # Start data rows at row 3 because row 1/2 are title + column headers.
         for r_idx, row in enumerate(df.itertuples(index=False), 3):
             for c_idx, value in enumerate(row, 1):
                 cell = ws.cell(r_idx, c_idx, value)

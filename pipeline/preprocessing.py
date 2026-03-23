@@ -3,18 +3,20 @@ import cv2
 import numpy as np
 
 def to_grayscale(img):
+    """Convert BGR image to grayscale for OCR/threshold operations."""
     return cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
 def denoise(img):
-    # Non-local means or median blur
+    """Reduce speckle noise that can hurt OCR character segmentation."""
     return cv2.fastNlMeansDenoising(img, h=10)
 
 def adaptive_threshold(img):
-    # img should be grayscale
+    """Binarize grayscale image using local neighborhoods."""
     return cv2.adaptiveThreshold(img, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
                                  cv2.THRESH_BINARY, 25, 10)
 
 def resize_for_ocr(img, max_dim=2000):
+    """Downscale very large images to keep OCR latency predictable."""
     h, w = img.shape[:2]
     scale = 1.0
     if max(h, w) > max_dim:
@@ -27,6 +29,7 @@ def deskew(img):
     Deskew grayscale image using Hough / moments approach.
     Returns deskewed image.
     """
+    # Use non-white pixel cloud to estimate dominant text angle.
     coords = np.column_stack(np.where(img < 255))
     if coords.size == 0:
         return img
@@ -55,7 +58,7 @@ def preprocess_for_ocr(path_or_image):
     gray = to_grayscale(img)
     gray = denoise(gray)
     gray = deskew(gray)
-    # Some images benefit from adaptive threshold; others from a light blur + Otsu.
+    # Adaptive threshold generally performs well on uneven page illumination.
     th = adaptive_threshold(gray)
     return th
 
@@ -86,6 +89,7 @@ def detect_voter_boxes(img, min_width=400, min_height=120):
 
     for cnt in contours:
         x, y, w, h = cv2.boundingRect(cnt)
+        # Width/height guards remove tiny artifacts and text-only contours.
         if w > min_width and h > min_height:
             boxes.append((x, y, w, h))
 

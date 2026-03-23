@@ -6,6 +6,7 @@ from pdf2image import convert_from_path
 from typing import List
 
 def ensure_folder(path: str):
+    """Create folder if missing."""
     os.makedirs(path, exist_ok=True)
 
 
@@ -58,6 +59,7 @@ def list_voter_pages(folder: str) -> List[str]:
     pages = glob.glob(os.path.join(folder, "page_*.jpg"))
 
     def page_key(path: str):
+        # Numeric sort avoids page_10 appearing before page_2.
         base = os.path.basename(path)
         match = re.search(r"page_(\d+)", base)
         if match:
@@ -74,7 +76,7 @@ def get_voter_pages(images_folder: str, pdf_path: str = None, skip_front_pages: 
     """
     ensure_folder(images_folder)
     if pdf_path:
-        # convert pdf pages to images into images_folder
+        # Convert PDF pages to image files before downstream processing.
         pdf_to_images(pdf_path, images_folder)
 
     pages = list_voter_pages(images_folder)

@@ -37,6 +37,7 @@ def process_single_page(args):  # OPTIMIZED
             print(f"Warning: could not read {page_path}")  # OPTIMIZED
             return page_idx, []  # OPTIMIZED
 
+        # Each detected box corresponds to one voter card block on the page.
         boxes = detect_voter_boxes(img, min_width=400, min_height=120)  # OPTIMIZED
         for x, y, w, h in boxes:  # OPTIMIZED
             try:  # OPTIMIZED
@@ -82,6 +83,7 @@ def run_pipeline(
     skip_front_pages=0,
     progress_callback: Optional[Callable[[int], None]] = None,
 ):
+    """Run end-to-end OCR from input pages/PDF and persist records to Excel."""
     os.makedirs(out_folder, exist_ok=True)
     cleanup_legacy_outputs(out_folder)
 
@@ -116,6 +118,7 @@ def run_pipeline(
 
         if progress_callback:  # OPTIMIZED
             progress_callback(15)  # OPTIMIZED
+        # Filter out non-data pages (cover/index pages) using layout heuristics.
         pages = [page for page in pages if is_data_page(page)]  # OPTIMIZED
         print(f"Auto-detected {len(pages)} data pages")  # OPTIMIZED
 
@@ -135,6 +138,7 @@ def run_pipeline(
         latest_saved_path = None
 
         def flush_outputs():
+            """Write records to primary output; fall back if target is locked by Excel."""
             nonlocal latest_saved_path
             try:
                 save_to_formatted_excel(records, output_xlsx_path)
@@ -172,6 +176,8 @@ def run_pipeline(
                     finally:  # OPTIMIZED
                         pages_processed += 1  # OPTIMIZED
 
+                    # Futures complete out of order; finalize only contiguous pages to
+                    # preserve deterministic serial numbering across runs.
                     while next_page_to_finalize in completed_pages:  # OPTIMIZED
                         for rec in all_page_results[next_page_to_finalize]:  # OPTIMIZED
                             rec['Serial Number'] = serial_counter  # OPTIMIZED

@@ -9,6 +9,7 @@ import re
 # pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
 def image_to_text_pil(pil_image, lang='eng', oem=3, psm=3):
+    """Run OCR on a PIL image with configurable Tesseract engine/page modes."""
     config = f'--oem {oem} --psm {psm}'
     return pytesseract.image_to_string(pil_image, lang=lang, config=config)
 
@@ -17,7 +18,8 @@ def image_path_to_text(img_path, lang='eng', oem=3, psm=3):
     return image_to_text_pil(pil, lang=lang, oem=oem, psm=psm)
 
 def image_array_to_text(img_array, lang='eng', oem=3, psm=6):  # OPTIMIZED
-    # img_array should be a numpy array, grayscale or BGR
+    """OCR helper that accepts either grayscale or BGR numpy images."""
+    # Convert OpenCV BGR arrays to RGB before creating PIL image.
     if len(img_array.shape) == 2:
         pil = Image.fromarray(img_array)
     else:
@@ -31,6 +33,7 @@ def fix_epic_ocr(raw):
         return None
 
     raw = raw.upper().strip()
+    # Different correction maps are used for EPIC prefix letters vs suffix digits.
     letter_fixes = {'0': 'O', '1': 'I', '5': 'S', '8': 'B'}
     digit_fixes = {
         'O': '0', 'I': '1', 'S': '5', 'B': '8',
@@ -53,6 +56,7 @@ def extract_epic_from_crop(voter_crop):
     """
     h, w = voter_crop.shape[:2]
 
+    # Try multiple header heights because different PDFs use different card templates.
     for header_pct in [0.20, 0.25, 0.30]:  # OPTIMIZED
         header_h = max(40, int(h * header_pct))  # OPTIMIZED
         header_crop = voter_crop[0:header_h, w // 2:]  # OPTIMIZED
@@ -73,11 +77,13 @@ def extract_epic_from_crop(voter_crop):
         ).strip().upper()  # OPTIMIZED
 
         cleaned = re.sub(r'[^A-Z0-9]', '', header_text)  # OPTIMIZED
+        # EPIC candidates are normalized to alnum before 10-char scanning.
         for match in re.finditer(r'[A-Z0-9]{10}', cleaned):  # OPTIMIZED
             fixed = fix_epic_ocr(match.group(0))  # OPTIMIZED
             if fixed:  # OPTIMIZED
                 return fixed  # OPTIMIZED
 
+    # Fallback pass with a simpler threshold in case Otsu removes faint characters.
     header_h = max(40, int(h * 0.20))  # OPTIMIZED
     header_crop = voter_crop[0:header_h, w // 2:]  # OPTIMIZED
     scale = 3  # OPTIMIZED
