@@ -179,7 +179,7 @@ After a successful run, `output/voter_output.xlsx` will contain one row per vote
 
 ---
 
-## 🛠️ Tech Stack
+##  Tech Stack
 
 | Library                     | Role                                       |
 | --------------------------- | ------------------------------------------ |
