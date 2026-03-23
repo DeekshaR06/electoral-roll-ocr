@@ -71,7 +71,7 @@ async def upload_roll(file: UploadFile = File(...)):
     if not filename.endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Please upload a valid PDF file")
 
-    _set_status(state="processing", progress=5, stage="Converting PDF to images...", error=None)  # OPTIMIZED
+    _set_status(state="processing", progress=5, stage="Converting PDF to images...", error=None)
 
     tmp_path = None
     try:
@@ -124,7 +124,7 @@ async def upload_roll(file: UploadFile = File(...)):
                 }
             )
 
-        _set_status(state="completed", progress=100, stage="Completed", error=None)  # OPTIMIZED
+        _set_status(state="completed", progress=100, stage="Completed", error=None)
 
         return {
             "total_voters": len(records),
@@ -135,10 +135,10 @@ async def upload_roll(file: UploadFile = File(...)):
             "preview": preview,
         }
     except HTTPException as exc:
-        _set_status(state="failed", progress=0, stage="Failed", error=str(exc.detail))  # OPTIMIZED
+        _set_status(state="failed", progress=0, stage="Failed", error=str(exc.detail))
         raise
     except Exception as exc:  # pragma: no cover - defensive API wrapper
-        _set_status(state="failed", progress=0, stage="Failed", error=str(exc))  # OPTIMIZED
+        _set_status(state="failed", progress=0, stage="Failed", error=str(exc))
         raise HTTPException(status_code=500, detail=str(exc))
     finally:
         if tmp_path and os.path.exists(tmp_path):

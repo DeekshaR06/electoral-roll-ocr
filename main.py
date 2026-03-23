@@ -3,10 +3,10 @@ import os
 import shutil
 import tempfile
 import argparse
-from concurrent.futures import ThreadPoolExecutor, as_completed  # OPTIMIZED
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable, Optional
 from pipeline.image_loader import get_voter_pages
-from pipeline.preprocessing import detect_voter_boxes, is_data_page  # OPTIMIZED
+from pipeline.preprocessing import detect_voter_boxes, is_data_page
 from pipeline.ocr_engine import (
     image_array_to_text,
     extract_epic_from_crop,
@@ -27,34 +27,34 @@ if os.getenv("TESSERACT_CMD"):
     pytesseract.pytesseract.tesseract_cmd = os.getenv("TESSERACT_CMD")
 
 
-def process_single_page(args):  # OPTIMIZED
-    """Process one page and return list of voter records without serial numbers."""  # OPTIMIZED
-    page_path, page_idx = args  # OPTIMIZED
-    page_records = []  # OPTIMIZED
-    try:  # OPTIMIZED
-        img = cv2.imread(page_path)  # OPTIMIZED
-        if img is None:  # OPTIMIZED
-            print(f"Warning: could not read {page_path}")  # OPTIMIZED
-            return page_idx, []  # OPTIMIZED
+def process_single_page(args):  
+    """Process one page and return list of voter records without serial numbers."""
+    page_path, page_idx = args  
+    page_records = []  
+    try:  
+        img = cv2.imread(page_path)  
+        if img is None: 
+            print(f"Warning: could not read {page_path}")  
+            return page_idx, []  
 
         # Each detected box corresponds to one voter card block on the page.
-        boxes = detect_voter_boxes(img, min_width=400, min_height=120)  # OPTIMIZED
-        for x, y, w, h in boxes:  # OPTIMIZED
-            try:  # OPTIMIZED
-                voter_crop = img[y:y + h, x:x + w]  # OPTIMIZED
-                text = image_array_to_text(voter_crop, psm=6)  # OPTIMIZED
-                epic = extract_epic_from_crop(voter_crop)  # OPTIMIZED
-                if not epic:  # OPTIMIZED
-                    epic = extract_epic_fallback_from_text(text)  # OPTIMIZED
-                rec = parse_voter_fields(text, epic=epic)  # OPTIMIZED
-                rec['source_file'] = os.path.basename(page_path)  # OPTIMIZED
-                page_records.append(rec)  # OPTIMIZED
-            except Exception as e:  # OPTIMIZED
-                print(f"Error on crop in {page_path}: {e}")  # OPTIMIZED
-    except Exception as e:  # OPTIMIZED
-        print(f"Error processing page {page_path}: {e}")  # OPTIMIZED
+        boxes = detect_voter_boxes(img, min_width=400, min_height=120)
+        for x, y, w, h in boxes:  
+            try:  
+                voter_crop = img[y:y + h, x:x + w]  
+                text = image_array_to_text(voter_crop, psm=6) 
+                epic = extract_epic_from_crop(voter_crop) 
+                if not epic:
+                    epic = extract_epic_fallback_from_text(text)
+                rec = parse_voter_fields(text, epic=epic)
+                rec['source_file'] = os.path.basename(page_path)
+                page_records.append(rec)
+            except Exception as e:
+                print(f"Error on crop in {page_path}: {e}")
+    except Exception as e:
+        print(f"Error processing page {page_path}: {e}")
 
-    return page_idx, page_records  # OPTIMIZED
+    return page_idx, page_records
 
 
 def cleanup_legacy_outputs(out_folder):
@@ -79,7 +79,7 @@ def run_pipeline(
     images_folder=IMAGES_DIR,
     out_folder=OUTPUT_DIR,
     pdf_path=None,
-    autosave_every_pages=5,  # OPTIMIZED
+    autosave_every_pages=5,
     skip_front_pages=0,
     progress_callback: Optional[Callable[[int], None]] = None,
 ):
@@ -116,22 +116,22 @@ def run_pipeline(
                 "output_path": None,
             }
 
-        if progress_callback:  # OPTIMIZED
-            progress_callback(15)  # OPTIMIZED
+        if progress_callback:
+            progress_callback(15)
         # Filter out non-data pages (cover/index pages) using layout heuristics.
-        pages = [page for page in pages if is_data_page(page)]  # OPTIMIZED
-        print(f"Auto-detected {len(pages)} data pages")  # OPTIMIZED
+        pages = [page for page in pages if is_data_page(page)]
+        print(f"Auto-detected {len(pages)} data pages")
 
-        if not pages:  # OPTIMIZED
-            return {  # OPTIMIZED
-                "records": [],  # OPTIMIZED
-                "pages_processed": 0,  # OPTIMIZED
-                "output_path": None,  # OPTIMIZED
-            }  # OPTIMIZED
+        if not pages:
+            return {
+                "records": [],
+                "pages_processed": 0,
+                "output_path": None,
+            }
 
-        print(  # OPTIMIZED
-            f"Processing {len(pages)} data pages from '{working_images_folder}' after skipping {skip_front_pages} front pages."  # OPTIMIZED
-        )  # OPTIMIZED
+        print(
+            f"Processing {len(pages)} data pages from '{working_images_folder}' after skipping {skip_front_pages} front pages."
+        )
 
         output_xlsx_path = os.path.join(out_folder, "voter_output.xlsx")
         fallback_xlsx_path = os.path.join(out_folder, "voter_output_autosave.xlsx")
@@ -166,7 +166,7 @@ def run_pipeline(
                     executor.submit(process_single_page, (page, idx)): idx  
                     for idx, page in enumerate(pages)  
                 }  
-                for future in tqdm(as_completed(future_to_idx), total=len(future_to_idx), desc="Processing pages"):  # OPTIMIZED
+                for future in tqdm(as_completed(future_to_idx), total=len(future_to_idx), desc="Processing pages"):
                     try:  
                         page_idx, page_records = future.result() 
                         all_page_results[page_idx] = page_records  
@@ -245,7 +245,7 @@ if __name__ == "__main__":
         "--autosave-every-pages",
         dest="autosave_every_pages",
         type=int,
-        default=5,  # OPTIMIZED
+        default=5,
         help="Autosave outputs every N processed pages. Use 0 to disable.",
     )
     parser.add_argument(

@@ -17,7 +17,7 @@ def image_path_to_text(img_path, lang='eng', oem=3, psm=3):
     pil = Image.open(img_path)
     return image_to_text_pil(pil, lang=lang, oem=oem, psm=psm)
 
-def image_array_to_text(img_array, lang='eng', oem=3, psm=6):  # OPTIMIZED
+def image_array_to_text(img_array, lang='eng', oem=3, psm=6):
     """OCR helper that accepts either grayscale or BGR numpy images."""
     # Convert OpenCV BGR arrays to RGB before creating PIL image.
     if len(img_array.shape) == 2:
@@ -57,52 +57,52 @@ def extract_epic_from_crop(voter_crop):
     h, w = voter_crop.shape[:2]
 
     # Try multiple header heights because different PDFs use different card templates.
-    for header_pct in [0.20, 0.25, 0.30]:  # OPTIMIZED
-        header_h = max(40, int(h * header_pct))  # OPTIMIZED
-        header_crop = voter_crop[0:header_h, w // 2:]  # OPTIMIZED
+    for header_pct in [0.20, 0.25, 0.30]:
+        header_h = max(40, int(h * header_pct))
+        header_crop = voter_crop[0:header_h, w // 2:]
 
-        scale = 3  # OPTIMIZED
-        header_large = cv2.resize(  # OPTIMIZED
-            header_crop,  # OPTIMIZED
-            (header_crop.shape[1] * scale, header_crop.shape[0] * scale),  # OPTIMIZED
-            interpolation=cv2.INTER_CUBIC,  # OPTIMIZED
-        )  # OPTIMIZED
-        header_gray = cv2.cvtColor(header_large, cv2.COLOR_BGR2GRAY)  # OPTIMIZED
+        scale = 3
+        header_large = cv2.resize(
+            header_crop,
+            (header_crop.shape[1] * scale, header_crop.shape[0] * scale),
+            interpolation=cv2.INTER_CUBIC,
+        )
+        header_gray = cv2.cvtColor(header_large, cv2.COLOR_BGR2GRAY)
 
-        _, otsu = cv2.threshold(  # OPTIMIZED
-            header_gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU  # OPTIMIZED
-        )  # OPTIMIZED
-        header_text = pytesseract.image_to_string(  # OPTIMIZED
-            otsu, config='--oem 3 --psm 7'  # OPTIMIZED
-        ).strip().upper()  # OPTIMIZED
+        _, otsu = cv2.threshold(
+            header_gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
+        )
+        header_text = pytesseract.image_to_string(
+            otsu, config='--oem 3 --psm 7'
+        ).strip().upper()
 
-        cleaned = re.sub(r'[^A-Z0-9]', '', header_text)  # OPTIMIZED
+        cleaned = re.sub(r'[^A-Z0-9]', '', header_text)
         # EPIC candidates are normalized to alnum before 10-char scanning.
-        for match in re.finditer(r'[A-Z0-9]{10}', cleaned):  # OPTIMIZED
-            fixed = fix_epic_ocr(match.group(0))  # OPTIMIZED
-            if fixed:  # OPTIMIZED
-                return fixed  # OPTIMIZED
+        for match in re.finditer(r'[A-Z0-9]{10}', cleaned):
+            fixed = fix_epic_ocr(match.group(0))
+            if fixed:
+                return fixed
 
     # Fallback pass with a simpler threshold in case Otsu removes faint characters.
-    header_h = max(40, int(h * 0.20))  # OPTIMIZED
-    header_crop = voter_crop[0:header_h, w // 2:]  # OPTIMIZED
-    scale = 3  # OPTIMIZED
-    header_large = cv2.resize(  # OPTIMIZED
-        header_crop,  # OPTIMIZED
-        (header_crop.shape[1] * scale, header_crop.shape[0] * scale),  # OPTIMIZED
-        interpolation=cv2.INTER_CUBIC,  # OPTIMIZED
-    )  # OPTIMIZED
-    header_gray = cv2.cvtColor(header_large, cv2.COLOR_BGR2GRAY)  # OPTIMIZED
-    _, plain = cv2.threshold(header_gray, 127, 255, cv2.THRESH_BINARY)  # OPTIMIZED
-    header_text = pytesseract.image_to_string(  # OPTIMIZED
-        plain, config='--oem 3 --psm 7'  # OPTIMIZED
-    ).strip().upper()  # OPTIMIZED
+    header_h = max(40, int(h * 0.20))
+    header_crop = voter_crop[0:header_h, w // 2:]
+    scale = 3
+    header_large = cv2.resize(
+        header_crop,
+        (header_crop.shape[1] * scale, header_crop.shape[0] * scale),
+        interpolation=cv2.INTER_CUBIC,
+    )
+    header_gray = cv2.cvtColor(header_large, cv2.COLOR_BGR2GRAY)
+    _, plain = cv2.threshold(header_gray, 127, 255, cv2.THRESH_BINARY)
+    header_text = pytesseract.image_to_string(
+        plain, config='--oem 3 --psm 7'
+    ).strip().upper()
 
-    cleaned = re.sub(r'[^A-Z0-9]', '', header_text)  # OPTIMIZED
-    for match in re.finditer(r'[A-Z0-9]{10}', cleaned):  # OPTIMIZED
-        fixed = fix_epic_ocr(match.group(0))  # OPTIMIZED
-        if fixed:  # OPTIMIZED
-            return fixed  # OPTIMIZED
+    cleaned = re.sub(r'[^A-Z0-9]', '', header_text)
+    for match in re.finditer(r'[A-Z0-9]{10}', cleaned):
+        fixed = fix_epic_ocr(match.group(0))
+        if fixed:
+            return fixed
 
     return None
 

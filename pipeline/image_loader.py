@@ -20,7 +20,7 @@ def clear_generated_pages(output_folder: str) -> int:
         os.remove(path)
     return len(files)
 
-def pdf_to_images(pdf_path: str, output_folder: str, dpi: int = 200) -> List[str]:  # OPTIMIZED
+def pdf_to_images(pdf_path: str, output_folder: str, dpi: int = 200) -> List[str]:
     """
     Convert PDF pages to images and save in output_folder.
     Returns list of saved image file paths.

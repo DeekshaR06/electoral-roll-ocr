@@ -97,14 +97,14 @@ def detect_voter_boxes(img, min_width=400, min_height=120):
     return boxes
 
 
-def is_data_page(image_path: str, min_boxes: int = 3, min_width: int = 400, min_height: int = 120) -> bool:  # OPTIMIZED
-    """  # OPTIMIZED
-    Returns True if page contains voter card data.  # OPTIMIZED
-    Detects data pages automatically without hardcoding page numbers.  # OPTIMIZED
-    Works for any Electoral Roll PDF regardless of front page count.  # OPTIMIZED
-    """  # OPTIMIZED
-    img = cv2.imread(image_path)  # OPTIMIZED
-    if img is None:  # OPTIMIZED
-        return False  # OPTIMIZED
-    boxes = detect_voter_boxes(img, min_width=min_width, min_height=min_height)  # OPTIMIZED
-    return len(boxes) >= min_boxes  # OPTIMIZED
+def is_data_page(image_path: str, min_boxes: int = 3, min_width: int = 400, min_height: int = 120) -> bool:
+    """
+    Returns True if page contains voter card data.
+    Detects data pages automatically without hardcoding page numbers.
+    Works for any Electoral Roll PDF regardless of front page count.
+    """
+    img = cv2.imread(image_path)
+    if img is None:
+        return False
+    boxes = detect_voter_boxes(img, min_width=min_width, min_height=min_height)
+    return len(boxes) >= min_boxes
