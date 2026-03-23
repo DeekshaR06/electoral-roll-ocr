@@ -156,39 +156,39 @@ def run_pipeline(
         pages_processed = 0
 
         try:
-            all_page_results = [[] for _ in range(len(pages))]  # OPTIMIZED
-            completed_pages = set()  # OPTIMIZED
-            next_page_to_finalize = 0  # OPTIMIZED
-            serial_counter = 1  # OPTIMIZED
+            all_page_results = [[] for _ in range(len(pages))]  
+            completed_pages = set()  
+            next_page_to_finalize = 0  
+            serial_counter = 1  
 
-            with ThreadPoolExecutor(max_workers=4) as executor:  # OPTIMIZED
-                future_to_idx = {  # OPTIMIZED
-                    executor.submit(process_single_page, (page, idx)): idx  # OPTIMIZED
-                    for idx, page in enumerate(pages)  # OPTIMIZED
-                }  # OPTIMIZED
+            with ThreadPoolExecutor(max_workers=4) as executor: 
+                future_to_idx = {  
+                    executor.submit(process_single_page, (page, idx)): idx  
+                    for idx, page in enumerate(pages)  
+                }  
                 for future in tqdm(as_completed(future_to_idx), total=len(future_to_idx), desc="Processing pages"):  # OPTIMIZED
-                    try:  # OPTIMIZED
-                        page_idx, page_records = future.result()  # OPTIMIZED
-                        all_page_results[page_idx] = page_records  # OPTIMIZED
-                        completed_pages.add(page_idx)  # OPTIMIZED
-                    except Exception as e:  # OPTIMIZED
-                        print(f"Page future failed: {e}")  # OPTIMIZED
-                    finally:  # OPTIMIZED
-                        pages_processed += 1  # OPTIMIZED
+                    try:  
+                        page_idx, page_records = future.result() 
+                        all_page_results[page_idx] = page_records  
+                        completed_pages.add(page_idx)  
+                    except Exception as e:  
+                        print(f"Page future failed: {e}")  
+                    finally:  
+                        pages_processed += 1  
 
                     # Futures complete out of order; finalize only contiguous pages to
                     # preserve deterministic serial numbering across runs.
-                    while next_page_to_finalize in completed_pages:  # OPTIMIZED
-                        for rec in all_page_results[next_page_to_finalize]:  # OPTIMIZED
-                            rec['Serial Number'] = serial_counter  # OPTIMIZED
-                            records.append(rec)  # OPTIMIZED
-                            serial_counter += 1  # OPTIMIZED
-                        next_page_to_finalize += 1  # OPTIMIZED
+                    while next_page_to_finalize in completed_pages:  
+                        for rec in all_page_results[next_page_to_finalize]:
+                            rec['Serial Number'] = serial_counter  
+                            records.append(rec) 
+                            serial_counter += 1  
+                        next_page_to_finalize += 1  
 
-                    if progress_callback and len(pages) > 0:  # OPTIMIZED
-                        progress_callback(int((pages_processed / len(pages)) * 90))  # OPTIMIZED
-                    if autosave_every_pages > 0 and pages_processed % autosave_every_pages == 0:  # OPTIMIZED
-                        flush_outputs()  # OPTIMIZED
+                    if progress_callback and len(pages) > 0: 
+                        progress_callback(int((pages_processed / len(pages)) * 90))  
+                    if autosave_every_pages > 0 and pages_processed % autosave_every_pages == 0:  
+                        flush_outputs()  
         except KeyboardInterrupt:
             print("\nInterrupted. Saving partial results...")
             flush_outputs()

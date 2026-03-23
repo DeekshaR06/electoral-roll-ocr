@@ -33,21 +33,21 @@ _state_lock = Lock()
 _status = {
     "state": "idle",
     "progress": 0,
-    "stage": "Idle",  # OPTIMIZED
+    "stage": "Idle",  
     "error": None,
 }
 _downloads = {}
 
 
-def _set_status(*, state=None, progress=None, stage=None, error=None):  # OPTIMIZED
+def _set_status(*, state=None, progress=None, stage=None, error=None): 
     """Thread-safe helper to update API-visible pipeline status."""
     with _state_lock:
         if state is not None:
             _status["state"] = state
         if progress is not None:
             _status["progress"] = int(max(0, min(100, progress)))
-        if stage is not None:  # OPTIMIZED
-            _status["stage"] = stage  # OPTIMIZED
+        if stage is not None:  
+            _status["stage"] = stage  
         if error is not None:
             _status["error"] = error
 
@@ -59,7 +59,7 @@ def get_status():
         return {
             "state": _status["state"],
             "progress": _status["progress"],
-            "stage": _status["stage"],  # OPTIMIZED
+            "stage": _status["stage"],  
             "error": _status["error"],
         }
 
@@ -79,23 +79,23 @@ async def upload_roll(file: UploadFile = File(...)):
             shutil.copyfileobj(file.file, tmp)
             tmp_path = tmp.name
 
-        def update_progress(pct: int):  # OPTIMIZED
+        def update_progress(pct: int):  
             # Map coarse numeric progress to user-facing stage labels.
-            if pct < 15:  # OPTIMIZED
-                stage = "Converting PDF to images..."  # OPTIMIZED
-            elif pct < 30:  # OPTIMIZED
-                stage = "Detecting voter cards..."  # OPTIMIZED
-            elif pct < 90:  # OPTIMIZED
-                stage = "Extracting voter data..."  # OPTIMIZED
-            else:  # OPTIMIZED
-                stage = "Generating Excel file..."  # OPTIMIZED
-            _set_status(progress=max(5, pct), stage=stage)  # OPTIMIZED
+            if pct < 15:  
+                stage = "Converting PDF to images..."  
+            elif pct < 30:  
+                stage = "Detecting voter cards..."  
+            elif pct < 90:  
+                stage = "Extracting voter data..."  
+            else:  
+                stage = "Generating Excel file..."  
+            _set_status(progress=max(5, pct), stage=stage)  
 
-        result = await run_in_threadpool(  # OPTIMIZED
-            run_pipeline,  # OPTIMIZED
-            pdf_path=tmp_path,  # OPTIMIZED
-            progress_callback=update_progress,  # OPTIMIZED
-        )  # OPTIMIZED
+        result = await run_in_threadpool(  
+            run_pipeline, 
+            pdf_path=tmp_path,  
+            progress_callback=update_progress,  
+        )  
 
         records = result.get("records", [])
         output_path = result.get("output_path")
