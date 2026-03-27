@@ -1,12 +1,90 @@
 # pipeline/parser.py
 import re
+import os
+
+
+def extract_age_value(text: str) -> str:
+    """Extract age from noisy OCR text with tolerant patterns and sanity checks."""
+    if not text:
+        return ''
+
+    normalized = (text or '').replace('|', ':')
+    age_patterns = [
+        r'\b(?:age|aged|aqe|a9e|ag[e6])\b\s*[:;=\-]?\s*([0-9OILSBZGTA?§%]{1,3})(?=\s|$|[,:;])',
+        r'\b(?:age|aged|aqe|a9e|ag[e6])\D{0,8}([0-9OILSBZGTA?§%]{1,3})(?=\s|$|[,:;])',
+        r'([0-9OILSBZGTA?§%]{1,3})\s*(?:years?|yrs?)\b',
+    ]
+
+    def normalize_age_token(token: str):
+        if not token:
+            return None
+        mapping = {
+            'O': '0', 'I': '1', 'L': '1', 'S': '5', 'B': '8',
+            'Z': '2', 'G': '6', 'T': '7', 'A': '4', '?': '7',
+            '§': '5', '%': '8',
+        }
+        cleaned = ''.join(mapping.get(ch.upper(), ch) for ch in token if ch.isalnum() or ch in {'?', '§', '%'})
+        digits = re.sub(r'\D', '', cleaned)
+        if not digits:
+            return None
+
+        val = int(digits)
+        if 18 <= val <= 125:
+            return val
+
+        # Common OCR artifact: extra leading '1' for two-digit ages (e.g., 164 -> 64).
+        if len(digits) == 3 and digits.startswith('1'):
+            tail = int(digits[1:])
+            if 18 <= tail <= 99:
+                return tail
+        return None
+
+    candidates = []
+    for pattern in age_patterns:
+        for match in re.finditer(pattern, normalized, re.IGNORECASE):
+            val = normalize_age_token(match.group(1))
+            if val is not None:
+                candidates.append(str(val))
+
+    return candidates[0] if candidates else ''
+
+
+def _debug_age_miss(text: str, debug_context: str = '') -> None:
+    """Emit focused debug logs for records where age could not be extracted."""
+    if os.getenv('OCR_DEBUG_AGE', '').strip().lower() not in {'1', 'true', 'yes', 'on'}:
+        return
+
+    raw = text or ''
+    compact = re.sub(r'\s+', ' ', raw).strip()
+    hint_patterns = [
+        r'\b(age|aged|aqe|a9e|ag[e6])\b[^\n]{0,25}',
+        r'\b(\d{1,3})\s*(years?|yrs?)\b',
+    ]
+    hints = []
+    for pat in hint_patterns:
+        for m in re.finditer(pat, raw, re.IGNORECASE):
+            snippet = m.group(0).replace('\n', ' ').strip()
+            if snippet and snippet not in hints:
+                hints.append(snippet)
+
+    print('[AGE-DEBUG] Missing age')
+    if debug_context:
+        print(f'[AGE-DEBUG] Context: {debug_context}')
+    if hints:
+        print(f"[AGE-DEBUG] Nearby age-like text: {' | '.join(hints[:3])}")
+    print(f"[AGE-DEBUG] OCR snippet: {compact[:220]}")
 
 def normalize_text(text: str) -> str:
     """Collapse repeated whitespace for regex-friendly parsing."""
     return re.sub(r'\s+', ' ', text).strip()
 
 
-def parse_voter_fields(raw_text: str, serial_number: int = None, epic: str = '') -> dict:
+def parse_voter_fields(
+    raw_text: str,
+    serial_number: int = None,
+    epic: str = '',
+    debug_context: str = '',
+) -> dict:
     """
     Parse OCR text from a single voter card block into notebook-style fields.
     """
@@ -68,10 +146,9 @@ def parse_voter_fields(raw_text: str, serial_number: int = None, epic: str = '')
     if house_match:
         house = house_match.group(1).strip()
 
-    age = ''
-    age_match = re.search(r'Age\s*[=:]\s*(\d+)', text, re.IGNORECASE)
-    if age_match:
-        age = age_match.group(1)
+    age = extract_age_value(text)
+    if not age:
+        _debug_age_miss(text, debug_context=debug_context)
 
     gender = ''
     gender_match = re.search(
@@ -176,7 +253,11 @@ def parse_voter_card(raw_text: str) -> dict:
     rec['epic'] = epics[0] if epics else None
 
     # Age detection
-    age = extract_field_by_label(lines, ['age', 'aged'])
+    age = extract_age_value(raw_text)
+    if not age:
+        age = extract_field_by_label(lines, ['age', 'aged'])
+    if not age:
+        _debug_age_miss(raw_text)
     rec['age'] = age
 
     # DOB detection

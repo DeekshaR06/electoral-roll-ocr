@@ -46,7 +46,24 @@ def process_single_page(args):
                 epic = extract_epic_from_crop(voter_crop) 
                 if not epic:
                     epic = extract_epic_fallback_from_text(text)
-                rec = parse_voter_fields(text, epic=epic)
+                debug_context = (
+                    f"page={os.path.basename(page_path)} "
+                    f"box=({x},{y},{w},{h}) epic={epic or 'NA'}"
+                )
+                rec = parse_voter_fields(text, epic=epic, debug_context=debug_context)
+
+                # Ignore false-positive boxes that produce fully empty voter fields.
+                key_fields = [
+                    rec.get('EPIC Number', ''),
+                    rec.get('Name', ''),
+                    rec.get('Relative Name', ''),
+                    rec.get('House Number', ''),
+                    rec.get('Age', ''),
+                    rec.get('Gender', ''),
+                ]
+                if not any(str(v).strip() for v in key_fields):
+                    continue
+
                 rec['source_file'] = os.path.basename(page_path)
                 page_records.append(rec)
             except Exception as e:

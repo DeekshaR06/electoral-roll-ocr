@@ -1,6 +1,7 @@
 # pipeline/preprocessing.py
 import cv2
 import numpy as np
+import pytesseract
 
 def to_grayscale(img):
     """Convert BGR image to grayscale for OCR/threshold operations."""
@@ -97,6 +98,21 @@ def detect_voter_boxes(img, min_width=400, min_height=120):
     return boxes
 
 
+def _has_voter_field_signals(img, min_hits: int = 2) -> bool:
+    """OCR fallback to confirm voter content when contour count is low."""
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    h, w = gray.shape[:2]
+    max_w = 1200
+    if w > max_w:
+        scale = max_w / float(w)
+        gray = cv2.resize(gray, (max_w, int(h * scale)), interpolation=cv2.INTER_AREA)
+
+    text = pytesseract.image_to_string(gray, config='--oem 3 --psm 6').upper()
+    signals = ["AGE", "GENDER", "HOUSE", "NAME", "FATHER", "HUSBAND", "MOTHER"]
+    hits = sum(1 for token in signals if token in text)
+    return hits >= min_hits and ("AGE" in text or "GENDER" in text)
+
+
 def is_data_page(image_path: str, min_boxes: int = 3, min_width: int = 400, min_height: int = 120) -> bool:
     """
     Returns True if page contains voter card data.
@@ -107,4 +123,13 @@ def is_data_page(image_path: str, min_boxes: int = 3, min_width: int = 400, min_
     if img is None:
         return False
     boxes = detect_voter_boxes(img, min_width=min_width, min_height=min_height)
-    return len(boxes) >= min_boxes
+    if len(boxes) >= min_boxes:
+        return True
+
+    # Allow low-card-count pages (e.g., trailing page with 1 card) when OCR
+    # still shows voter field labels.
+    if boxes:
+        return _has_voter_field_signals(img)
+
+    # Last-resort OCR check when contour detection misses faint/partial boxes.
+    return _has_voter_field_signals(img)
