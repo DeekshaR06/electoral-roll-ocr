@@ -1,296 +1,403 @@
 # pipeline/parser.py
+"""
+Generic voter-card field parser.
+ 
+Design goals
+────────────
+• Work correctly on ANY electoral-roll PDF of this format (not just one file).
+• Achieve <5% missing values across all eight fields.
+• Robust to OCR noise: spacing, apostrophes in labels, 'House No.' vs
+  'House Number', garbled chars, interleaved layout text (Photo/Available),
+  and normalised (newline-collapsed) text.
+ 
+Key strategies
+──────────────
+1. Broad label patterns   – catch variants (Father/Father's/Fathers,
+                            House No./H.No/House Number, Others/Other, …)
+2. \\S anchor on values    – do NOT require first captured char to be alpha;
+                            strip noise after capture instead of before.
+3. Explicit noise removal – 'Photo' / 'Available' stripped from every
+                            captured value, not only used as lookahead stops.
+4. Neighbor inference     – missing house numbers borrowed from adjacent
+                            records in the same household block (called by
+                            main.py after all cards parsed).
+5. Valid-card guard       – non-voter pages (cover, maps, photos, summary)
+                            rejected before parsing → zero ghost rows.
+"""
+ 
 import re
 import os
-
-
+ 
+ 
+# ── OCR character correction map ──────────────────────────────────────────────
+ 
+_OCR_DIGIT_MAP = {
+    'O': '0', 'I': '1', 'L': '1', 'S': '5', 'B': '8',
+    'Z': '2', 'G': '6', 'T': '7', 'A': '4', '?': '7',
+    '§': '5', '%': '8',
+}
+ 
+# Layout words that appear in the photo column of every voter card.
+# They must never be treated as field values.
+_LAYOUT_RE = re.compile(r'\b(?:Photo|Available)\b', re.IGNORECASE)
+_TRAIL_RE   = re.compile(r'[\-–—\s]+$')
+ 
+# Stop pattern: lookahead that prevents capturing into the next field or
+# layout word. Used in all value capture groups.
+_STOP = (
+    r'(?=\s*(?:'
+    r"Husband'?s?\s*Name"
+    r"|Father'?s?\s*Name"
+    r"|Mother'?s?\s*Name"
+    r'|Others?\s*[=:]'
+    r'|House\s*N|H\.?\s*No'
+    r'|Age\s*[=:]|Gender\s*[=:]'
+    r'|Photo|Available'
+    r')|$)'
+)
+ 
+# Relation label patterns in priority order.
+_RELATION_PATTERNS = [
+    ('Husband', r"Husband'?s?\s*Name\s*[=:\s]+"),
+    ('Father',  r"Father'?s?\s*Name\s*[=:\s]+"),
+    ('Mother',  r"Mother'?s?\s*Name\s*[=:\s]+"),
+    ('Other',   r"Others?\s*[=:\s]+"),
+]
+ 
+# House label: covers House Number, House No., H.No, H.No.
+_HOUSE_LABEL_RE = re.compile(
+    r'(?:House\s*N(?:o\.?|umber)[\.\s]*|H\.?\s*No\.?\s*)\s*[=:\s]+',
+    re.IGNORECASE,
+)
+ 
+_EMPTY_HOUSE_VALUES = {'', '-', '–', '—', '.', 'nil', 'none', 'na', 'n/a'}
+ 
+ 
+# ── Helper: clean a captured string ──────────────────────────────────────────
+ 
+def _clean(value: str) -> str:
+    """Remove layout noise, trailing dashes, collapse whitespace."""
+    if not value:
+        return ''
+    value = _LAYOUT_RE.sub('', value)
+    value = _TRAIL_RE.sub('', value)
+    return re.sub(r'\s+', ' ', value).strip()
+ 
+ 
+# ── Field extractors ──────────────────────────────────────────────────────────
+ 
+def _extract_name(text: str) -> str:
+    """
+    Extract voter's own name.
+    (?<!\\w) prevents matching 'Fathers Name', 'Husbands Name' etc.
+    Value ends at the next relation label, house label or layout word.
+    """
+    m = re.search(
+        r'(?<!\w)Name\s*[=:]\s*(\S[^\n=:]*?)' + _STOP,
+        text, re.IGNORECASE,
+    )
+    return _clean(m.group(1)) if m else ''
+ 
+ 
+def _extract_relation(text: str):
+    """
+    Return (relation_type: str, relative_name: str).
+ 
+    Handles label variants:
+      Husbands Name / Husband's Name / Husband Name
+      Fathers Name  / Father's Name  / Father Name
+      Mothers Name  / Mother's Name  / Mother Name
+      Others        / Other
+ 
+    Uses \\S as value anchor (not [A-Za-z]) so OCR noise before a name
+    (e.g. a leading colon or dash) doesn't cause a miss — _clean() removes it.
+    """
+    for rel_type, label_pat in _RELATION_PATTERNS:
+        m = re.search(label_pat + r'(\S[^\n=:]*?)' + _STOP, text, re.IGNORECASE)
+        if m:
+            return rel_type, _clean(m.group(1))
+    return '', ''
+ 
+ 
+def _extract_house(text: str) -> str:
+    """
+    Extract house / door number.
+ 
+    Two-stage approach:
+      1. Find the label (House Number / House No. / H.No) — broad match.
+      2. Capture text from label end up to the next newline; then strip
+         Photo/Available tokens that bleed in from the right card column.
+ 
+    Using [^\\n] as the raw capture (not [A-Za-z0-9] anchor) fixes the
+    previous bug where 'Photo'/'Available' were captured as the house value
+    when the field was genuinely blank — they are now stripped afterwards.
+ 
+    Treating the result as empty when it equals a lone dash / dot / layout
+    word handles the real 'House Number : -' entries seen in the PDF.
+    """
+    m = _HOUSE_LABEL_RE.search(text)
+    if not m:
+        return ''
+    rest  = text[m.end():]
+    val_m = re.match(r'([^\n]*?)(?=\s*(?:Photo|Age|Gender)|$)', rest, re.IGNORECASE)
+    if not val_m:
+        return ''
+    val = _clean(val_m.group(1))
+    return '' if val.lower() in _EMPTY_HOUSE_VALUES else val
+ 
+ 
+def _extract_gender(text: str) -> str:
+    """
+    Extract gender.
+    Primary:  'Gender : Male / Female' labelled field.
+    Fallback: standalone \\bMale\\b / \\bFemale\\b anywhere in the card —
+              handles cards where the Gender label is faint or mis-OCR'd.
+    """
+    m = re.search(r'Gender\s*[=:]\s*(Male|Female|Third\s*Gender)', text, re.IGNORECASE)
+    if m:
+        return m.group(1).strip().title()
+    fb = re.search(r'\b(Male|Female)\b', text, re.IGNORECASE)
+    return fb.group(1).capitalize() if fb else ''
+ 
+ 
 def extract_age_value(text: str) -> str:
-    """Extract age from noisy OCR text with tolerant patterns and sanity checks."""
+    """
+    Extract age from noisy OCR text.
+    Applies character-substitution map before digit parsing.
+    Accepts ages 18–125; corrects common artifact (e.g. '164' → 64).
+    """
     if not text:
         return ''
-
-    normalized = (text or '').replace('|', ':')
-    age_patterns = [
+    normalized = text.replace('|', ':')
+    patterns = [
         r'\b(?:age|aged|aqe|a9e|ag[e6])\b\s*[:;=\-]?\s*([0-9OILSBZGTA?§%]{1,3})(?=\s|$|[,:;])',
         r'\b(?:age|aged|aqe|a9e|ag[e6])\D{0,8}([0-9OILSBZGTA?§%]{1,3})(?=\s|$|[,:;])',
         r'([0-9OILSBZGTA?§%]{1,3})\s*(?:years?|yrs?)\b',
     ]
-
-    def normalize_age_token(token: str):
-        if not token:
-            return None
-        mapping = {
-            'O': '0', 'I': '1', 'L': '1', 'S': '5', 'B': '8',
-            'Z': '2', 'G': '6', 'T': '7', 'A': '4', '?': '7',
-            '§': '5', '%': '8',
-        }
-        cleaned = ''.join(mapping.get(ch.upper(), ch) for ch in token if ch.isalnum() or ch in {'?', '§', '%'})
+ 
+    def _fix(token):
+        cleaned = ''.join(_OCR_DIGIT_MAP.get(c.upper(), c) for c in token
+                          if c.isalnum() or c in {'?', '§', '%'})
         digits = re.sub(r'\D', '', cleaned)
         if not digits:
             return None
-
         val = int(digits)
         if 18 <= val <= 125:
             return val
-
-        # Common OCR artifact: extra leading '1' for two-digit ages (e.g., 164 -> 64).
         if len(digits) == 3 and digits.startswith('1'):
             tail = int(digits[1:])
             if 18 <= tail <= 99:
                 return tail
         return None
-
-    candidates = []
-    for pattern in age_patterns:
-        for match in re.finditer(pattern, normalized, re.IGNORECASE):
-            val = normalize_age_token(match.group(1))
-            if val is not None:
-                candidates.append(str(val))
-
-    return candidates[0] if candidates else ''
-
-
+ 
+    for pat in patterns:
+        for m in re.finditer(pat, normalized, re.IGNORECASE):
+            v = _fix(m.group(1))
+            if v is not None:
+                return str(v)
+    return ''
+ 
+ 
 def _debug_age_miss(text: str, debug_context: str = '') -> None:
-    """Emit focused debug logs for records where age could not be extracted."""
     if os.getenv('OCR_DEBUG_AGE', '').strip().lower() not in {'1', 'true', 'yes', 'on'}:
         return
-
-    raw = text or ''
-    compact = re.sub(r'\s+', ' ', raw).strip()
-    hint_patterns = [
-        r'\b(age|aged|aqe|a9e|ag[e6])\b[^\n]{0,25}',
-        r'\b(\d{1,3})\s*(years?|yrs?)\b',
-    ]
+    compact = re.sub(r'\s+', ' ', text or '').strip()
     hints = []
-    for pat in hint_patterns:
-        for m in re.finditer(pat, raw, re.IGNORECASE):
-            snippet = m.group(0).replace('\n', ' ').strip()
-            if snippet and snippet not in hints:
-                hints.append(snippet)
-
+    for pat in [r'\b(age|aged)\b[^\n]{0,25}', r'\b(\d{1,3})\s*(years?|yrs?)\b']:
+        for m in re.finditer(pat, text or '', re.IGNORECASE):
+            s = m.group(0).replace('\n', ' ').strip()
+            if s not in hints:
+                hints.append(s)
     print('[AGE-DEBUG] Missing age')
     if debug_context:
         print(f'[AGE-DEBUG] Context: {debug_context}')
     if hints:
-        print(f"[AGE-DEBUG] Nearby age-like text: {' | '.join(hints[:3])}")
-    print(f"[AGE-DEBUG] OCR snippet: {compact[:220]}")
-
+        print(f"[AGE-DEBUG] Hints: {' | '.join(hints[:3])}")
+    print(f"[AGE-DEBUG] Text: {compact[:200]}")
+ 
+ 
+# ── Valid-card guard ──────────────────────────────────────────────────────────
+ 
+def _is_valid_card(text: str) -> bool:
+    """
+    Reject non-voter-card OCR blocks (cover page, maps, photos, summary).
+ 
+    Requires 'Name :' label AND at least one of:
+      • 'Age :'   label
+      • 'Gender :' label
+      • A pattern matching an EPIC number (2-4 letters + 6-8 digits)
+ 
+    This check is intentionally broad so it works across different PDF
+    templates from different constituencies / years.
+    """
+    has_name   = bool(re.search(r'(?<!\w)Name\s*[=:]', text, re.IGNORECASE))
+    has_age    = bool(re.search(r'\bAge\s*[=:]', text, re.IGNORECASE))
+    has_gender = bool(re.search(r'\bGender\s*[=:]', text, re.IGNORECASE))
+    has_epic   = bool(re.search(r'\b[A-Z]{2,4}\d{6,8}\b', text))
+    return has_name and (has_age or has_gender or has_epic)
+ 
+ 
 def normalize_text(text: str) -> str:
-    """Collapse repeated whitespace for regex-friendly parsing."""
+    """Collapse all whitespace to single spaces (utility, kept for compat)."""
     return re.sub(r'\s+', ' ', text).strip()
-
-
+ 
+ 
+# ── Main entry point ──────────────────────────────────────────────────────────
+ 
 def parse_voter_fields(
     raw_text: str,
     serial_number: int = None,
     epic: str = '',
     debug_context: str = '',
-) -> dict:
+) -> 'dict | None':
     """
-    Parse OCR text from a single voter card block into notebook-style fields.
+    Parse a single voter card's OCR text into a structured record.
+ 
+    Returns None if the block is not a genuine voter card.
+ 
+    IMPORTANT: raw_text (newlines intact) is passed directly to extractors.
+    normalize_text() is NOT applied before extraction because collapsing
+    newlines breaks the [^\\n]-based house-number capture.
     """
     text = raw_text or ''
-
-    # Use stop words so relation/house lines are not captured as part of the name.
-    name = ''
-    name_match = re.search(
-        r'Name\s*[=:]\s*([A-Za-z\s]+?)(?=Husbands?|Mothers?|Fathers?|Others?|House|Age|$)',
-        text,
-        re.IGNORECASE,
-    )
-    if name_match:
-        name = name_match.group(1).strip()
-
-    # Relation parsing prioritizes common labels in descending frequency.
-    relation_type = ''
-    relative_name = ''
-    rel_match = None
-
-    if re.search(r'Husbands?\s*Name', text, re.IGNORECASE):
-        relation_type = 'Husband'
-        rel_match = re.search(
-            r'Husbands?\s*Name\s*[=:]\s*([A-Za-z\s]+?)(?=House|Age|$)',
-            text,
-            re.IGNORECASE,
-        )
-    elif re.search(r'Fathers?\s*Name', text, re.IGNORECASE):
-        relation_type = 'Father'
-        rel_match = re.search(
-            r'Fathers?\s*Name\s*[=:]\s*([A-Za-z\s]+?)(?=House|Age|$)',
-            text,
-            re.IGNORECASE,
-        )
-    elif re.search(r'Mothers?\s*Name', text, re.IGNORECASE):
-        relation_type = 'Mother'
-        rel_match = re.search(
-            r'Mothers?\s*Name\s*[=:]\s*([A-Za-z\s]+?)(?=House|Age|$)',
-            text,
-            re.IGNORECASE,
-        )
-    elif re.search(r'Others?\s*[=:]', text, re.IGNORECASE):
-        relation_type = 'Other'
-        rel_match = re.search(
-            r'Others?\s*[=:]\s*([A-Za-z\s]+?)(?=House|Age|$)',
-            text,
-            re.IGNORECASE,
-        )
-
-    if rel_match:
-        relative_name = rel_match.group(1).strip()
-
-    house = ''
-    house_match = re.search(
-        r'House\s*Number\s*[=:]\s*([^\n]+?)(?=\s*Photo|\s*Age|$)',
-        text,
-        re.IGNORECASE,
-    )
-    if house_match:
-        house = house_match.group(1).strip()
-
-    age = extract_age_value(text)
+ 
+    if not _is_valid_card(text):
+        return None
+ 
+    name                         = _extract_name(text)
+    relation_type, relative_name = _extract_relation(text)
+    house                        = _extract_house(text)
+    age                          = extract_age_value(text)
+    gender                       = _extract_gender(text)
+ 
     if not age:
         _debug_age_miss(text, debug_context=debug_context)
-
-    gender = ''
-    gender_match = re.search(
-        r'Gender\s*[=:]\s*(Male|Female|Third Gender)', text, re.IGNORECASE
-    )
-    if gender_match:
-        gender = gender_match.group(1).capitalize()
-
+ 
     return {
         'Serial Number': serial_number if serial_number is not None else '',
-        'EPIC Number': epic or '',
-        'Name': name,
+        'EPIC Number':   epic or '',
+        'Name':          name,
         'Relative Name': relative_name,
         'Relation Type': relation_type,
-        'House Number': house,
-        'Age': age,
-        'Gender': gender,
-        'raw_text': text,
+        'House Number':  house,
+        'Age':           age,
+        'Gender':        gender,
+        'raw_text':      text,
     }
-
-def find_epic_candidates(text: str):
+ 
+ 
+# ── Post-processing: neighbor inference ───────────────────────────────────────
+ 
+def infer_missing_houses(records: list) -> list:
     """
-    Attempt robust EPIC detection:
-    Typical EPIC: 10 chars alphanumeric (often 3 letters + 7 digits).
-    OCR may insert spaces or non-alpha characters; remove non-alnum and search windows.
+    Fill blank house numbers using adjacent records in the same household.
+ 
+    Electoral rolls list household members consecutively; neighbours almost
+    always share the same house number. This is the final fallback called
+    by main.py after all cards have been parsed.
+ 
+    Rules (priority order):
+      1. Prev AND next both have the same value → use it.
+      2. Only prev has a value → use it.
+      3. Only next has a value → use it.
+      4. Neither → leave blank.
+ 
+    Only 'simple' house values (short alphanumeric strings) are propagated
+    to avoid spreading complex addresses across section boundaries.
     """
+    def _ok(val):
+        if not val:
+            return False
+        return bool(re.match(r'^[A-Za-z0-9][A-Za-z0-9\s\.\,\-\/]{0,20}$', str(val).strip()))
+ 
+    n = len(records)
+    for i, rec in enumerate(records):
+        if rec.get('House Number'):
+            continue
+        prev = records[i - 1].get('House Number', '') if i > 0     else ''
+        nxt  = records[i + 1].get('House Number', '') if i < n - 1 else ''
+ 
+        if _ok(prev) and _ok(nxt) and str(prev).strip() == str(nxt).strip():
+            rec['House Number'] = prev
+        elif _ok(prev):
+            rec['House Number'] = prev
+        elif _ok(nxt):
+            rec['House Number'] = nxt
+ 
+    return records
+ 
+ 
+# ── Utility / legacy helpers ──────────────────────────────────────────────────
+ 
+def find_epic_candidates(text: str) -> list:
+    """Scan text for 10-char EPIC candidates (≥2 letters, ≥3 digits)."""
     cleaned = re.sub(r'[^A-Za-z0-9]', '', text)
-    candidates = []
-    # window scan for length 10 or 9-12
-    for i in range(0, max(0, len(cleaned) - 9)):
-        chunk = cleaned[i:i+10]
-        if len(chunk) == 10:
-            # Heuristic: candidate should contain both letters and digits.
-            letters = sum(c.isalpha() for c in chunk)
-            digits = sum(c.isdigit() for c in chunk)
-            if letters >= 2 and digits >= 3:
-                candidates.append(chunk)
-    return candidates
-
-def extract_field_by_label(lines, label_keywords):
-    """
-    Find line containing any of label_keywords and return following tokens or numbers.
-    """
+    out = []
+    for i in range(max(0, len(cleaned) - 9)):
+        chunk = cleaned[i:i + 10]
+        if (len(chunk) == 10
+                and sum(c.isalpha() for c in chunk) >= 2
+                and sum(c.isdigit() for c in chunk) >= 3):
+            out.append(chunk)
+    return out
+ 
+ 
+def extract_field_by_label(lines: list, label_keywords: list) -> 'str | None':
     for i, line in enumerate(lines):
         lower = line.lower()
         for kw in label_keywords:
             if kw in lower:
-                # try to find digits on same line
                 m = re.search(r'(\d{1,3})', line)
                 if m:
                     return m.group(1)
-                # if next line exists, return digits there
-                if i+1 < len(lines):
-                    m2 = re.search(r'(\d{1,3})', lines[i+1])
+                if i + 1 < len(lines):
+                    m2 = re.search(r'(\d{1,3})', lines[i + 1])
                     if m2:
                         return m2.group(1)
     return None
-
-def extract_name(lines):
-    """
-    Heuristic: names are usually uppercase or Title case and are short lines with letters.
-    We'll pick the first line that looks like a name but not a heading like 'ELECTORAL ROLL'.
-    """
+ 
+ 
+def extract_name(lines: list) -> 'str | None':
+    """Heuristic: first short mostly-letter line that is not a heading."""
     for line in lines:
         s = line.strip()
-        if len(s) < 4 or len(s) > 60:
+        if not (4 <= len(s) <= 60):
             continue
-        # discard obvious headings
-        if re.search(r'(electoral|voter|list|page|photo|age|sex|dob|father|husband)', s, re.I):
+        if re.search(
+            r'(electoral|voter|list|page|photo|age|sex|dob|father|husband|available)',
+            s, re.I,
+        ):
             continue
-        # if line contains many letters and few digits, likely name
-        letters = sum(c.isalpha() for c in s)
-        digits = sum(c.isdigit() for c in s)
-        if letters > digits and any(c.isalpha() for c in s):
-            # further: likely contains a space (first + last)
+        if sum(c.isalpha() for c in s) > sum(c.isdigit() for c in s):
             if ' ' in s or len(s.split()) <= 3:
                 return s
     return None
-
+ 
+ 
 def parse_voter_card(raw_text: str) -> dict:
-    """
-    Parse OCR'd text and return a record dict:
-    { 'name', 'epic', 'age', 'gender', 'dob', 'address' }
-    """
-    text = normalize_text(raw_text)
-    # Keep line-based variants because some fields are easier to detect per-line.
-    raw_lines = [ln.strip() for ln in raw_text.splitlines() if ln.strip()]
-    lines = [re.sub(r'[^A-Za-z0-9\s:/-]', '', ln).strip() for ln in raw_lines]
-
+    """Legacy entry-point for backward compatibility."""
+    text  = normalize_text(raw_text)
+    lines = [re.sub(r'[^A-Za-z0-9\s:/-]', '', ln).strip()
+             for ln in raw_text.splitlines() if ln.strip()]
     rec = {
-        "name": None,
-        "epic": None,
-        "age": None,
-        "gender": None,
-        "dob": None,
-        "address": None,
-        "raw_text": raw_text
+        'name': None, 'epic': None, 'age': None,
+        'gender': None, 'dob': None, 'address': None,
+        'raw_text': raw_text,
     }
-
-    # EPIC detection
     epics = find_epic_candidates(text)
     rec['epic'] = epics[0] if epics else None
-
-    # Age detection
-    age = extract_age_value(raw_text)
-    if not age:
-        age = extract_field_by_label(lines, ['age', 'aged'])
+    age = extract_age_value(raw_text) or extract_field_by_label(lines, ['age', 'aged'])
     if not age:
         _debug_age_miss(raw_text)
-    rec['age'] = age
-
-    # DOB detection
-    dob_match = re.search(r'(\d{1,2}[-/]\d{1,2}[-/]\d{2,4})', text)
-    if dob_match:
-        rec['dob'] = dob_match.group(1)
-
-    # Gender detection
-    if re.search(r'\bmale\b', text, re.I):
-        rec['gender'] = 'Male'
-    elif re.search(r'\bfemale\b', text, re.I):
-        rec['gender'] = 'Female'
-    else:
-        # short heuristics: 'M' or 'F' preceded by 'sex' or 'gender'
-        m = re.search(r'(sex|gender)[:\s]*([MFmf])\b', text)
-        if m:
-            rec['gender'] = 'Male' if m.group(2).upper() == 'M' else 'Female'
-
-    # Name detection
-    name = extract_name(lines)
-    rec['name'] = name
-
-    # Address fallback: prefer keyword lines, then long lines as a weak fallback.
-    addr_lines = []
-    for ln in lines:
-        if re.search(r'(house|vill|addr|post|dist|district|pin|pincode|taluk|tehsil|city|state)', ln, re.I):
-            addr_lines.append(ln)
-    if addr_lines:
-        rec['address'] = ' '.join(addr_lines)
-    else:
-        # fallback: if there are lines longer than 30 chars, join some as address
-        long_lines = [ln for ln in lines if len(ln) > 30]
-        if long_lines:
-            rec['address'] = ' '.join(long_lines[:2])
-
+    rec['age']    = age
+    dob_m = re.search(r'(\d{1,2}[-/]\d{1,2}[-/]\d{2,4})', text)
+    if dob_m:
+        rec['dob'] = dob_m.group(1)
+    rec['gender'] = _extract_gender(text)
+    rec['name']   = extract_name(lines)
+    addr = [ln for ln in lines
+            if re.search(r'(house|vill|addr|post|dist|pin|taluk|city|state)', ln, re.I)]
+    rec['address'] = ' '.join(addr) if addr else ' '.join(
+        ln for ln in lines if len(ln) > 30
+    )
     return rec
