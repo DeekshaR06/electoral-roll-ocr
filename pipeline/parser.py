@@ -93,7 +93,7 @@ def parse_voter_fields(
     # Use stop words so relation/house lines are not captured as part of the name.
     name = ''
     name_match = re.search(
-        r'Name\s*[=:]\s*([A-Za-z\s]+?)(?=Husbands?|Mothers?|Fathers?|Others?|House|Age|$)',
+        r'Name\s*[=:]\s*([A-Za-z\.\s]+?)(?=Husbands?|Mothers?|Fathers?|Others?|House|Age|$)',
         text,
         re.IGNORECASE,
     )
@@ -108,28 +108,28 @@ def parse_voter_fields(
     if re.search(r'Husbands?\s*Name', text, re.IGNORECASE):
         relation_type = 'Husband'
         rel_match = re.search(
-            r'Husbands?\s*Name\s*[=:]\s*([A-Za-z\s]+?)(?=House|Age|$)',
+            r'Husbands?\s*Name\s*[=:]\s*([A-Za-z\.\s]+?)(?=House|Age|$)',
             text,
             re.IGNORECASE,
         )
     elif re.search(r'Fathers?\s*Name', text, re.IGNORECASE):
         relation_type = 'Father'
         rel_match = re.search(
-            r'Fathers?\s*Name\s*[=:]\s*([A-Za-z\s]+?)(?=House|Age|$)',
+            r'Fathers?\s*Name\s*[=:]\s*([A-Za-z\.\s]+?)(?=House|Age|$)',
             text,
             re.IGNORECASE,
         )
     elif re.search(r'Mothers?\s*Name', text, re.IGNORECASE):
         relation_type = 'Mother'
         rel_match = re.search(
-            r'Mothers?\s*Name\s*[=:]\s*([A-Za-z\s]+?)(?=House|Age|$)',
+            r'Mothers?\s*Name\s*[=:]\s*([A-Za-z\.\s]+?)(?=House|Age|$)',
             text,
             re.IGNORECASE,
         )
     elif re.search(r'Others?\s*[=:]', text, re.IGNORECASE):
         relation_type = 'Other'
         rel_match = re.search(
-            r'Others?\s*[=:]\s*([A-Za-z\s]+?)(?=House|Age|$)',
+            r'Others?\s*[=:]\s*([A-Za-z\.\s]+?)(?=House|Age|$)',
             text,
             re.IGNORECASE,
         )
@@ -139,12 +139,12 @@ def parse_voter_fields(
 
     house = ''
     house_match = re.search(
-        r'House\s*Number\s*[=:]\s*([^\n]+?)(?=\s*Photo|\s*Age|$)',
+        r'House\s*Number\s*[=:]\s*([^\n]+?)(?=\s*Photo|\s*(?:Father|Mother|Husband|Other|Relative|Age|Gender)|$)',
         text,
         re.IGNORECASE,
     )
     if house_match:
-        house = house_match.group(1).strip()
+        house = re.sub(r'\s+', ' ', house_match.group(1).strip())
 
     age = extract_age_value(text)
     if not age:
@@ -177,15 +177,19 @@ def find_epic_candidates(text: str):
     """
     cleaned = re.sub(r'[^A-Za-z0-9]', '', text)
     candidates = []
-    # window scan for length 10 or 9-12
-    for i in range(0, max(0, len(cleaned) - 9)):
-        chunk = cleaned[i:i+10]
-        if len(chunk) == 10:
-            # Heuristic: candidate should contain both letters and digits.
-            letters = sum(c.isalpha() for c in chunk)
-            digits = sum(c.isdigit() for c in chunk)
-            if letters >= 2 and digits >= 3:
-                candidates.append(chunk)
+    # window scan for length 9-12 to handle OCR variations
+    for size in [10, 11, 9, 12]:
+        for i in range(0, max(0, len(cleaned) - size + 1)):
+            chunk = cleaned[i:i+size]
+            if len(chunk) == size:
+                # Heuristic: candidate should contain both letters and digits.
+                letters = sum(c.isalpha() for c in chunk)
+                digits = sum(c.isdigit() for c in chunk)
+                # Require a good mix: at least 2 letters and 3 digits
+                if letters >= 2 and digits >= 3 and letters + digits >= size * 0.8:
+                    candidates.append(chunk)
+        if candidates:
+            break  # Return best match from preferred size first
     return candidates
 
 def extract_field_by_label(lines, label_keywords):
@@ -236,7 +240,8 @@ def parse_voter_card(raw_text: str) -> dict:
     text = normalize_text(raw_text)
     # Keep line-based variants because some fields are easier to detect per-line.
     raw_lines = [ln.strip() for ln in raw_text.splitlines() if ln.strip()]
-    lines = [re.sub(r'[^A-Za-z0-9\s:/-]', '', ln).strip() for ln in raw_lines]
+    # Preserve dots in names while removing other special chars
+    lines = [re.sub(r'[^A-Za-z0-9\s:./-]', '', ln).strip() for ln in raw_lines]
 
     rec = {
         "name": None,
