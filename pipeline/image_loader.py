@@ -3,9 +3,10 @@ import glob
 import os
 import re
 from pdf2image import convert_from_path
-from typing import List
+from typing import List, Dict, Tuple
 import cv2
 import pytesseract
+from pipeline.ocr_engine import extract_polling_station_metadata
  
  
 def ensure_folder(path: str):
@@ -121,27 +122,63 @@ def _has_voter_card_signals_ocr(image_path: str) -> bool:
     return hits >= 5 and "AGE" in norm and "GENDER" in norm
  
  
-def _filter_boundary_pages_by_ocr(pages: List[str]) -> List[str]:
+def _filter_boundary_pages_by_ocr(pages: List[str]) -> Tuple[List[str], Dict]:
     """
     Check only boundary pages (first 3 and last page).
     Remove boundary pages that do not look like voter-card pages via OCR signals.
+    
+    Also extracts polling station metadata from the first page (cover page) if detected as non-data.
+    Returns tuple: (kept_pages, metadata_dict)
     """
     if not pages:
-        return pages
+        return pages, {
+            'polling_station_number': '',
+            'polling_station_name': '',
+            'polling_station_address': '',
+            'block': '',
+            'ward': '',
+        }
  
     boundary_indexes = set(range(min(3, len(pages))))
     boundary_indexes.add(len(pages) - 1)
  
     kept = []
     removed = []
+    metadata = {
+        'polling_station_number': '',
+        'polling_station_name': '',
+        'polling_station_address': '',
+        'block': '',
+        'ward': '',
+    }
  
     for idx, page in enumerate(pages):
         if idx in boundary_indexes:
             try:
-                if _has_voter_card_signals_ocr(page):
+                is_data_page = _has_voter_card_signals_ocr(page)
+                if is_data_page:
                     kept.append(page)
                 else:
                     removed.append(os.path.basename(page))
+                    # Extract metadata from first non-data page (typically cover page)
+                    if idx == 0 and not metadata['polling_station_number']:
+                        img = cv2.imread(page)
+                        if img is not None:
+                            try:
+                                gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+                                h, w = gray.shape[:2]
+                                max_dim = 1600
+                                if max(h, w) > max_dim:
+                                    scale = max_dim / float(max(h, w))
+                                    gray = cv2.resize(
+                                        gray,
+                                        (int(w * scale), int(h * scale)),
+                                        interpolation=cv2.INTER_AREA,
+                                    )
+                                ocr_text = pytesseract.image_to_string(gray, config="--oem 3 --psm 6")
+                                metadata = extract_polling_station_metadata(ocr_text)
+                            except Exception as exc:
+                                print(f"Metadata extraction failed for '{page}': {exc}")
             except Exception as exc:
                 print(
                     f"Boundary OCR check failed for '{page}' ({exc}). Keeping page."
@@ -156,19 +193,29 @@ def _filter_boundary_pages_by_ocr(pages: List[str]) -> List[str]:
             + ", ".join(removed)
         )
  
-    return kept
+    return kept, metadata
  
  
 def get_voter_pages(
     images_folder: str,
     pdf_path: str = None,
     skip_front_pages: int = 0,
-) -> List[str]:
+) -> Tuple[List[str], Dict]:
     """
     If pdf_path provided, convert to images (in images_folder) and return list.
     Otherwise just return existing images in images_folder.
+    
+    Returns tuple: (pages, metadata_dict)
     """
     ensure_folder(images_folder)
+    metadata = {
+        'polling_station_number': '',
+        'polling_station_name': '',
+        'polling_station_address': '',
+        'block': '',
+        'ward': '',
+    }
+    
     if pdf_path:
         pdf_to_images(pdf_path, images_folder)
  
@@ -177,7 +224,7 @@ def get_voter_pages(
         pages = list_images(images_folder)
  
     if pdf_path:
-        pages = _filter_boundary_pages_by_ocr(pages)
+        pages, metadata = _filter_boundary_pages_by_ocr(pages)
  
     if skip_front_pages > 0:
         print(
@@ -185,4 +232,4 @@ def get_voter_pages(
             "boundary OCR filtering is used instead."
         )
  
-    return pages
+    return pages, metadata

@@ -117,6 +117,93 @@ def extract_epic_fallback_from_text(text):
             return fixed
     return None
 
+
+def extract_polling_station_metadata(text: str) -> dict:
+    """
+    Extract polling station metadata (number, name, address, block, ward)
+    from OCR text of the cover page.
+    
+    Designed to handle OCR noise and variations in the electoral roll cover page layout.
+    Returns dict with keys: polling_station_number, polling_station_name,
+    polling_station_address, block, ward (empty string if not found).
+    """
+    if not text:
+        return {
+            'polling_station_number': '',
+            'polling_station_name': '',
+            'polling_station_address': '',
+            'block': '',
+            'ward': '',
+        }
+    
+    metadata = {
+        'polling_station_number': '',
+        'polling_station_name': '',
+        'polling_station_address': '',
+        'block': '',
+        'ward': '',
+    }
+    
+    # Normalize text: uppercase for matching, but preserve original case in captures
+    text_upper = text.upper()
+    text_lines = text.split('\n')
+    
+    # ─ Extract Polling Station Number and Name ─
+    # The OCR text often has station number and name like: "2 - St. Dominic Savio..." 
+    # Pattern accounts for variations in layout and line breaks.
+    
+    # First, try to find the standard pattern
+    ps_pattern = r"No\.\s+and\s+Name\s+of\s+Polling\s+Station\s*:(?:\s|\n)*(\d+)\s*-\s*(.+?)(?=\n\n|Address|Number\s+of|$)"
+    ps_match = re.search(ps_pattern, text, re.IGNORECASE | re.DOTALL)
+    
+    if not ps_match:
+        # Fallback: look for digit-dash-name pattern anywhere after "Polling Station" label
+        ps_pattern2 = r"Polling\s+Station\s*:.*?\n.*?(\d+)\s*-\s*(.+?)(?=\n.*?(?:Number|Address)|$)"
+        ps_match = re.search(ps_pattern2, text, re.IGNORECASE | re.DOTALL)
+    
+    if ps_match:
+        metadata['polling_station_number'] = ps_match.group(1).strip()
+        ps_name = ps_match.group(2).strip()
+        # Clean up: remove anything with an opening paren (e.g., "(Western side-front end)")
+        ps_name = ps_name.split('(')[0].strip()
+        # Remove trailing junk: "Number of...", "Type of...", etc.
+        ps_name = re.sub(r'\s+(?:Number|Type|Auxiliary).*$', '', ps_name, flags=re.IGNORECASE).strip()
+        # Clean up extra whitespace
+        ps_name = re.sub(r'\s+', ' ', ps_name).strip()
+        metadata['polling_station_name'] = ps_name
+    
+    # ─ Extract Address of Polling Station ─
+    # Pattern: "Address of Polling Station :" followed by multi-line address
+    addr_pattern = r"Address\s+of\s+Polling\s+Station\s*:\s*(.+?)(?=\n\n|(?:Number|Type)\s+of|$)"
+    addr_match = re.search(addr_pattern, text, re.IGNORECASE | re.DOTALL)
+    if addr_match:
+        addr_text = addr_match.group(1).strip()
+        # Clean up: collapse multiple spaces, remove excessive newlines
+        addr_text = ' '.join(addr_text.split())
+        # Remove OCR noise at end: "4." or other single digits, "NUMBER OF ELECTORS", etc.
+        addr_text = re.sub(r'\s+\d+\s*\.?\s*$', '', addr_text)
+        addr_text = re.sub(r'\s+(?:NUMBER|TYPE|Auxiliary)\s+.*$', '', addr_text, flags=re.IGNORECASE)
+        metadata['polling_station_address'] = addr_text.strip()
+    
+    # ─ Extract Block ─
+    # Pattern: "Block\s*:\s*<value>" (often in section details or right column)
+    block_pattern = r"Block\s*:\s*([^\n]+)"
+    block_match = re.search(block_pattern, text, re.IGNORECASE)
+    if block_match:
+        block_val = block_match.group(1).strip()
+        metadata['block'] = block_val
+    
+    # ─ Extract Ward ─
+    # Pattern: "Ward\s*:\s*<value>" or "[Ww]ard" if it appears in the text
+    ward_pattern = r"Ward\s*:\s*([^\n]+)"
+    ward_match = re.search(ward_pattern, text, re.IGNORECASE)
+    if ward_match:
+        ward_val = ward_match.group(1).strip()
+        metadata['ward'] = ward_val
+    
+    return metadata
+
+
 # Useful helper: get OCR with bounding boxes (if you want to inspect confidence)
 def image_to_data(img_array, lang='eng', oem=3, psm=3):
     config = f'--oem {oem} --psm {psm}'

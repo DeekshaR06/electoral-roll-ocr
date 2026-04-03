@@ -121,7 +121,7 @@ def run_pipeline(
         print(f"Input PDF: {pdf_path}")
  
     try:
-        pages = get_voter_pages(
+        pages, metadata = get_voter_pages(
             working_images_folder,
             pdf_path=pdf_path,
             skip_front_pages=skip_front_pages,
@@ -155,14 +155,14 @@ def run_pipeline(
         def flush_outputs():
             nonlocal latest_saved_path
             try:
-                save_to_formatted_excel(records, output_xlsx_path)
+                save_to_formatted_excel(records, output_xlsx_path, metadata=metadata)
                 latest_saved_path = output_xlsx_path
             except PermissionError:
                 print(
                     f"Could not write '{output_xlsx_path}' (file is in use). "
                     f"Saving to '{fallback_xlsx_path}' instead."
                 )
-                save_to_formatted_excel(records, fallback_xlsx_path)
+                save_to_formatted_excel(records, fallback_xlsx_path, metadata=metadata)
                 latest_saved_path = fallback_xlsx_path
  
         records = []
