@@ -56,47 +56,64 @@ _STOP = (
     r')|$)'
 )
  
-# Relation label patterns in priority order.
+# Relation label patterns in priority order - enhanced to handle more variations
 _RELATION_PATTERNS = [
-    ('Husband', r"Husband'?s?\s*Name\s*[=:\s]+"),
-    ('Father',  r"Father'?s?\s*Name\s*[=:\s]+"),
-    ('Mother',  r"Mother'?s?\s*Name\s*[=:\s]+"),
+    ('Husband', r"Husband'?s?\s*Names?\s*[=:\s]+"),
+    ('Father',  r"Father'?s?\s*Names?\s*[=:\s]+"),
+    ('Mother',  r"Mother'?s?\s*Names?\s*[=:\s]+"),
     ('Other',   r"Others?\s*[=:\s]+"),
 ]
- 
+
 # House label: covers House Number, House No., H.No, H.No.
 _HOUSE_LABEL_RE = re.compile(
     r'(?:House\s*N(?:o\.?|umber)[\.\s]*|H\.?\s*No\.?\s*)\s*[=:\s]+',
     re.IGNORECASE,
 )
- 
+
 _EMPTY_HOUSE_VALUES = {'', '-', '–', '—', '.', 'nil', 'none', 'na', 'n/a'}
- 
- 
+
+
 # ── Helper: clean a captured string ──────────────────────────────────────────
- 
+
 def _clean(value: str) -> str:
     """Remove layout noise, trailing dashes, collapse whitespace."""
     if not value:
         return ''
     value = _LAYOUT_RE.sub('', value)
     value = _TRAIL_RE.sub('', value)
+    # Remove leading/trailing colons and other punctuation that can appear from OCR noise
+    value = value.lstrip(':-–—').rstrip(':-–—')
     return re.sub(r'\s+', ' ', value).strip()
- 
- 
-# ── Field extractors ──────────────────────────────────────────────────────────
  
 def _extract_name(text: str) -> str:
     """
     Extract voter's own name.
     (?<!\\w) prevents matching 'Fathers Name', 'Husbands Name' etc.
     Value ends at the next relation label, house label or layout word.
+    
+    Enhanced to handle more OCR variations while maintaining performance.
     """
+    # Primary pattern: strict name extraction
     m = re.search(
         r'(?<!\w)Name\s*[=:]\s*(\S[^\n=:]*?)' + _STOP,
         text, re.IGNORECASE,
     )
-    return _clean(m.group(1)) if m else ''
+    if m:
+        val = _clean(m.group(1))
+        if len(val) >= 2:
+            return val
+    
+    # Fallback: Less strict - handle variations with OCR noise
+    m = re.search(
+        r'(?<!\w)Name\s*[:=\-\.+]?\s*(\S+[^\n=:]*?)(?=[\n]|$|(?:Husband|Father|Mother|House|Age|Gender))',
+        text, re.IGNORECASE,
+    )
+    if m:
+        val = _clean(m.group(1))
+        if len(val) >= 2:
+            return val
+    
+    return ''
  
  
 def _extract_relation(text: str):
@@ -115,23 +132,34 @@ def _extract_relation(text: str):
     for rel_type, label_pat in _RELATION_PATTERNS:
         m = re.search(label_pat + r'(\S[^\n=:]*?)' + _STOP, text, re.IGNORECASE)
         if m:
-            return rel_type, _clean(m.group(1))
+            val = _clean(m.group(1))
+            if len(val) >= 2:  # Must be at least 2 chars for a name
+                return rel_type, val
+    
+    # Fallback: try less restrictive patterns for Husband specifically (most common)
+    m = re.search(r"(?:Husband|H[Ua]sband)'?s?\s*(?:Name)?\s*[:=\s]+(\S[^\n=:]{1,}?)(?=\n|$|(?:Father|Mother|House|Age|Gender))", 
+                 text, re.IGNORECASE)
+    if m:
+        val = _clean(m.group(1))
+        if len(val) >= 2:
+            return 'Husband', val
+    
     return '', ''
- 
- 
+
+
 def _extract_house(text: str) -> str:
     """
     Extract house / door number.
- 
+
     Two-stage approach:
       1. Find the label (House Number / House No. / H.No) — broad match.
       2. Capture text from label end up to the next newline; then strip
          Photo/Available tokens that bleed in from the right card column.
- 
-    Using [^\\n] as the raw capture (not [A-Za-z0-9] anchor) fixes the
+
+    Using [^\n] as the raw capture (not [A-Za-z0-9] anchor) fixes the
     previous bug where 'Photo'/'Available' were captured as the house value
     when the field was genuinely blank — they are now stripped afterwards.
- 
+
     Treating the result as empty when it equals a lone dash / dot / layout
     word handles the real 'House Number : -' entries seen in the PDF.
     """
@@ -149,13 +177,16 @@ def _extract_house(text: str) -> str:
 def _extract_gender(text: str) -> str:
     """
     Extract gender.
-    Primary:  'Gender : Male / Female' labelled field.
+    Primary:  'Gender : Male / Female' labelled field with flexible separators.
     Fallback: standalone \\bMale\\b / \\bFemale\\b anywhere in the card —
               handles cards where the Gender label is faint or mis-OCR'd.
     """
-    m = re.search(r'Gender\s*[=:]\s*(Male|Female|Third\s*Gender)', text, re.IGNORECASE)
+    # More flexible separator handling
+    m = re.search(r'Gender\s*[:=\-\.+]?\s*(Male|Female|Third\s*Gender)', text, re.IGNORECASE)
     if m:
         return m.group(1).strip().title()
+    
+    # Fallback: Standalone gender keywords
     fb = re.search(r'\b(Male|Female)\b', text, re.IGNORECASE)
     return fb.group(1).capitalize() if fb else ''
  
@@ -218,22 +249,22 @@ def _debug_age_miss(text: str, debug_context: str = '') -> None:
  
 # ── Valid-card guard ──────────────────────────────────────────────────────────
  
-def _is_valid_card(text: str) -> bool:
+def _is_valid_card(text: str, epic: str = '') -> bool:
     """
     Reject non-voter-card OCR blocks (cover page, maps, photos, summary).
- 
+
     Requires 'Name :' label AND at least one of:
       • 'Age :'   label
       • 'Gender :' label
-      • A pattern matching an EPIC number (2-4 letters + 6-8 digits)
- 
+      • A pattern matching an EPIC number in text OR epic parameter
+
     This check is intentionally broad so it works across different PDF
     templates from different constituencies / years.
     """
     has_name   = bool(re.search(r'(?<!\w)Name\s*[=:]', text, re.IGNORECASE))
     has_age    = bool(re.search(r'\bAge\s*[=:]', text, re.IGNORECASE))
     has_gender = bool(re.search(r'\bGender\s*[=:]', text, re.IGNORECASE))
-    has_epic   = bool(re.search(r'\b[A-Z]{2,4}\d{6,8}\b', text))
+    has_epic   = bool(re.search(r'\b[A-Z]{2,4}\d{6,8}\b', text)) or bool(epic)
     return has_name and (has_age or has_gender or has_epic)
  
  
@@ -261,7 +292,7 @@ def parse_voter_fields(
     """
     text = raw_text or ''
  
-    if not _is_valid_card(text):
+    if not _is_valid_card(text, epic=epic):
         return None
  
     name                         = _extract_name(text)
@@ -282,6 +313,7 @@ def parse_voter_fields(
         'House Number':  house,
         'Age':           age,
         'Gender':        gender,
+        'Record Type':   'Voter',
         'raw_text':      text,
     }
  
@@ -401,3 +433,36 @@ def parse_voter_card(raw_text: str) -> dict:
         ln for ln in lines if len(ln) > 30
     )
     return rec
+
+# -- Voter Additions / Amendments Detection --------
+
+def detect_additions_section(text: str) -> bool:
+    additions_keywords = [
+        'ADDITION', 'ADDITIONS',
+        'AMENDMENT', 'AMENDMENTS', 'AMENDED',
+        'CORRECTION', 'CORRECTED', 'CORRECTIONS',
+        'NEW ELECTOR', 'NEW VOTER', 'NEW REGISTR', 'NEWLY REGISTERED',
+        'DELETION', 'DELETIONS', 'DELETED', 'REMOVAL', 'REMOVED', 'STRUCK OFF',
+        'SUPPLEMENTARY', 'SUPPLEMENT',
+        'PART A', 'PART B', 'PART C',
+        'CHANGES', 'MODIFIED', 'MODIFIED ENTRIES',
+    ]
+    text_upper = text.upper()
+    return any(keyword in text_upper for keyword in additions_keywords)
+
+
+def parse_additions_fields(text: str, epic: str = '', addition_type: str = 'Amendment') -> dict:
+    base_record = parse_voter_fields(text, epic=epic)
+    if base_record is None:
+        return None
+    
+    if 'NEW' in text.upper():
+        base_record['Record Type'] = 'New'
+    elif 'DELETE' in text.upper() or 'STRUCK' in text.upper():
+        base_record['Record Type'] = 'Deletion'
+    elif 'AMENDMENT' in text.upper() or 'CORRECTION' in text.upper():
+        base_record['Record Type'] = 'Amendment'
+    else:
+        base_record['Record Type'] = addition_type
+    
+    return base_record

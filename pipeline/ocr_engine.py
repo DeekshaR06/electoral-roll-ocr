@@ -52,12 +52,13 @@ def fix_epic_ocr(raw):
 
 def extract_epic_from_crop(voter_crop):
     """
-    Extract EPIC number from top-right header area of a voter-card crop.
+    Extract EPIC number from top-right area of a voter-card crop.
+    Tries header region first, then expands to larger areas for edge cases.
     """
     h, w = voter_crop.shape[:2]
 
-    # Try multiple header heights because different PDFs use different card templates.
-    for header_pct in [0.20, 0.25, 0.30]:
+    # Stage 1: Try header region (top 15-40%) with Otsu thresholding
+    for header_pct in [0.15, 0.20, 0.25, 0.30, 0.35, 0.40]:
         header_h = max(40, int(h * header_pct))
         header_crop = voter_crop[0:header_h, w // 2:]
 
@@ -77,28 +78,71 @@ def extract_epic_from_crop(voter_crop):
         ).strip().upper()
 
         cleaned = re.sub(r'[^A-Z0-9]', '', header_text)
-        # EPIC candidates are normalized to alnum before 10-char scanning.
         for match in re.finditer(r'[A-Z0-9]{10}', cleaned):
             fixed = fix_epic_ocr(match.group(0))
             if fixed:
                 return fixed
 
-    # Fallback pass with a simpler threshold in case Otsu removes faint characters.
-    header_h = max(40, int(h * 0.20))
-    header_crop = voter_crop[0:header_h, w // 2:]
-    scale = 3
-    header_large = cv2.resize(
-        header_crop,
-        (header_crop.shape[1] * scale, header_crop.shape[0] * scale),
+    # Stage 2: Fallback with fixed thresholds on header region
+    for header_pct in [0.20, 0.25, 0.30]:
+        header_h = max(40, int(h * header_pct))
+        header_crop = voter_crop[0:header_h, w // 2:]
+        scale = 3
+        header_large = cv2.resize(
+            header_crop,
+            (header_crop.shape[1] * scale, header_crop.shape[0] * scale),
+            interpolation=cv2.INTER_CUBIC,
+        )
+        header_gray = cv2.cvtColor(header_large, cv2.COLOR_BGR2GRAY)
+        _, plain = cv2.threshold(header_gray, 127, 255, cv2.THRESH_BINARY)
+        header_text = pytesseract.image_to_string(
+            plain, config='--oem 3 --psm 7'
+        ).strip().upper()
+
+        cleaned = re.sub(r'[^A-Z0-9]', '', header_text)
+        for match in re.finditer(r'[A-Z0-9]{10}', cleaned):
+            fixed = fix_epic_ocr(match.group(0))
+            if fixed:
+                return fixed
+
+    # Stage 3: Try neural OEM on header with various thresholds
+    for header_pct in [0.20, 0.25, 0.30]:
+        header_h = max(40, int(h * header_pct))
+        header_crop = voter_crop[0:header_h, w // 2:]
+        scale = 3
+        header_large = cv2.resize(
+            header_crop,
+            (header_crop.shape[1] * scale, header_crop.shape[0] * scale),
+            interpolation=cv2.INTER_CUBIC,
+        )
+        header_gray = cv2.cvtColor(header_large, cv2.COLOR_BGR2GRAY)
+        _, plain = cv2.threshold(header_gray, 100, 255, cv2.THRESH_BINARY)
+        header_text = pytesseract.image_to_string(
+            plain, config='--oem 1 --psm 7'
+        ).strip().upper()
+
+        cleaned = re.sub(r'[^A-Z0-9]', '', header_text)
+        for match in re.finditer(r'[A-Z0-9]{10}', cleaned):
+            fixed = fix_epic_ocr(match.group(0))
+            if fixed:
+                return fixed
+
+    # Stage 4: Expand search to top 50% of card (right half) for cards with unusual layout
+    top_half = voter_crop[0:h//2, w//2:]
+    half_large = cv2.resize(
+        top_half,
+        (top_half.shape[1] * 2, top_half.shape[0] * 2),
         interpolation=cv2.INTER_CUBIC,
     )
-    header_gray = cv2.cvtColor(header_large, cv2.COLOR_BGR2GRAY)
-    _, plain = cv2.threshold(header_gray, 127, 255, cv2.THRESH_BINARY)
-    header_text = pytesseract.image_to_string(
-        plain, config='--oem 3 --psm 7'
+    half_gray = cv2.cvtColor(half_large, cv2.COLOR_BGR2GRAY)
+    _, half_otsu = cv2.threshold(
+        half_gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
+    )
+    half_text = pytesseract.image_to_string(
+        half_otsu, config='--oem 3 --psm 7'
     ).strip().upper()
 
-    cleaned = re.sub(r'[^A-Z0-9]', '', header_text)
+    cleaned = re.sub(r'[^A-Z0-9]', '', half_text)
     for match in re.finditer(r'[A-Z0-9]{10}', cleaned):
         fixed = fix_epic_ocr(match.group(0))
         if fixed:
@@ -108,13 +152,40 @@ def extract_epic_from_crop(voter_crop):
 
 
 def extract_epic_fallback_from_text(text):
-    """Fallback EPIC detection from OCR text first line."""
-    first_line = text.split('\n')[0] if text else ''
-    cleaned = re.sub(r'[^A-Z0-9]', '', first_line.upper())
+    """
+    Fallback EPIC detection from OCR text.
+    Multi-stage search with decreasing priority.
+    """
+    if not text:
+        return None
+    
+    lines = text.split('\n')
+    
+    # Priority 1: Search first line (most common location)
+    if lines:
+        first_line = lines[0]
+        cleaned = re.sub(r'[^A-Z0-9]', '', first_line.upper())
+        for match in re.finditer(r'[A-Z0-9]{10}', cleaned):
+            fixed = fix_epic_ocr(match.group(0))
+            if fixed:
+                return fixed
+    
+    # Priority 2: Search top 5 lines if EPIC not in first line
+    for line in lines[:5]:
+        if line:
+            cleaned = re.sub(r'[^A-Z0-9]', '', line.upper())
+            for match in re.finditer(r'[A-Z0-9]{10}', cleaned):
+                fixed = fix_epic_ocr(match.group(0))
+                if fixed:
+                    return fixed
+    
+    # Priority 3: Search entire text as last resort
+    cleaned = re.sub(r'[^A-Z0-9]', '', text.upper())
     for match in re.finditer(r'[A-Z0-9]{10}', cleaned):
         fixed = fix_epic_ocr(match.group(0))
         if fixed:
             return fixed
+    
     return None
 
 
@@ -186,19 +257,25 @@ def extract_polling_station_metadata(text: str) -> dict:
         metadata['polling_station_address'] = addr_text.strip()
     
     # ─ Extract Block ─
-    # Pattern: "Block\s*:\s*<value>" (often in section details or right column)
-    block_pattern = r"Block\s*:\s*([^\n]+)"
-    block_match = re.search(block_pattern, text, re.IGNORECASE)
+    # Pattern: "Block\s*:\s*<value>" (can span multiple lines)
+    # Capture until we hit another field label (marked by ":\s*" on a new line) or end of text
+    block_pattern = r"Block\s*:\s*(.+?)(?=\n[A-Z][a-z]+\s*:|Pin\s+code|District|$)"
+    block_match = re.search(block_pattern, text, re.IGNORECASE | re.DOTALL)
     if block_match:
         block_val = block_match.group(1).strip()
+        # Collapse whitespace and newlines into single spaces
+        block_val = ' '.join(block_val.split())
         metadata['block'] = block_val
     
     # ─ Extract Ward ─
-    # Pattern: "Ward\s*:\s*<value>" or "[Ww]ard" if it appears in the text
-    ward_pattern = r"Ward\s*:\s*([^\n]+)"
-    ward_match = re.search(ward_pattern, text, re.IGNORECASE)
+    # Pattern: "Ward\s*:\s*<value>" (can span multiple lines)
+    # Capture until we hit another field label (marked by ":\s*" on a new line) or end of text
+    ward_pattern = r"Ward\s*:\s*(.+?)(?=\n[A-Z][a-z]+\s*:|Post\s+Office|Police|Patwari|Tehsil|District|Pin|$)"
+    ward_match = re.search(ward_pattern, text, re.IGNORECASE | re.DOTALL)
     if ward_match:
         ward_val = ward_match.group(1).strip()
+        # Collapse whitespace and newlines into single spaces
+        ward_val = ' '.join(ward_val.split())
         metadata['ward'] = ward_val
     
     return metadata

@@ -15,7 +15,67 @@ VOTER_HEADERS = [
     'House Number',
     'Age',
     'Gender',
+    'Record Type',
 ]
+
+
+def deduplicate_records(records: List[Dict]) -> tuple:
+    """
+    Remove duplicate records that were extracted twice (once as Voter, once as Amendment).
+    
+    Duplicates are identified by matching (EPIC Number, Name, House Number).
+    When duplicates exist, keep the "Voter" record type and discard others.
+    
+    Returns: (deduplicated_list, removed_count)
+    """
+    if not records:
+        return records, 0
+    
+    # Build a key from record identity fields
+    def get_record_key(rec):
+        epic = str(rec.get('EPIC Number', '')).strip()
+        name = str(rec.get('Name', '')).strip()
+        house = str(rec.get('House Number', '')).strip()
+        # Use non-empty fields only
+        parts = [p for p in [epic, name, house] if p and p.lower() != 'nan']
+        return tuple(parts) if parts else None
+    
+    # Group records by key
+    seen = {}  # key -> (index, record)
+    deduplicated = []
+    removed_count = 0
+    
+    for idx, rec in enumerate(records):
+        key = get_record_key(rec)
+        if key is None:
+            # No identifying info, keep it
+            deduplicated.append(rec)
+            continue
+        
+        if key not in seen:
+            # First occurrence of this record - keep it
+            seen[key] = (idx, rec)
+            deduplicated.append(rec)
+        else:
+            # Duplicate found
+            prev_idx, prev_rec = seen[key]
+            prev_type = prev_rec.get('Record Type', 'Voter')
+            curr_type = rec.get('Record Type', 'Voter')
+            
+            # Prefer to keep "Voter" type; if both or neither are voters, keep first
+            if prev_type == 'Voter' or curr_type != 'Voter':
+                # Keep the previous one, discard this one
+                removed_count += 1
+            else:
+                # Replace with current one (which is Voter type)
+                deduplicated[-1] = rec
+                seen[key] = (idx, rec)
+                removed_count += 1  # Still removing one
+    
+    if removed_count > 0:
+        print(f"Deduplicated: removed {removed_count} duplicate records")
+    
+    return deduplicated, removed_count
  
  
 def _to_voter_df(records: List[Dict]) -> pd.DataFrame:
@@ -45,12 +105,6 @@ def save_to_formatted_excel(records: List[Dict], out_path: str, metadata: Option
     Export voter records to a clean, properly formatted Excel file.
     
     If metadata is provided, writes polling station details at the top before the voter data table.
-
-    FIX: Removed the misleading 'Booth Details' label that was placed in
-    cell E1 (the Relation Type column). It had no relation to that column
-    and confused anyone reading the file. The first row is now a proper
-    merged title row showing the total voter count, making the file
-    immediately useful when opened.
 
     Layout with metadata:
       Rows 1-5 — metadata section (Polling Station details)
@@ -176,12 +230,10 @@ def save_to_formatted_excel(records: List[Dict], out_path: str, metadata: Option
         'F': 15,  # House Number
         'G': 8,   # Age
         'H': 10,  # Gender
+        'I': 14,  # Record Type
     }
     for col, width in column_widths.items():
         ws.column_dimensions[col].width = width
- 
-    # Freeze top 2 rows so headers stay visible when scrolling
-    ws.freeze_panes = f'A{current_row}'
  
     wb.save(out_path)
     return out_path
